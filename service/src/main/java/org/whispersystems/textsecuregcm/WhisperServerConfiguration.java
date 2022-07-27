@@ -1,49 +1,49 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.dropwizard.Configuration;
-import io.dropwizard.client.JerseyClientConfiguration;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
+import org.whispersystems.textsecuregcm.configuration.AbusiveMessageFilterConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AccountDatabaseCrawlerConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AccountsDatabaseConfiguration;
-import org.whispersystems.textsecuregcm.configuration.AccountsDynamoDbConfiguration;
 import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppConfigConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AwsAttachmentsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.BadgesConfiguration;
+import org.whispersystems.textsecuregcm.configuration.BoostConfiguration;
 import org.whispersystems.textsecuregcm.configuration.CdnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DatabaseConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DatadogConfiguration;
-import org.whispersystems.textsecuregcm.configuration.DeletedAccountsDynamoDbConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DirectoryConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DirectoryV2Configuration;
 import org.whispersystems.textsecuregcm.configuration.DonationConfiguration;
-import org.whispersystems.textsecuregcm.configuration.DynamoDbConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DynamoDbClientConfiguration;
+import org.whispersystems.textsecuregcm.configuration.DynamoDbTables;
 import org.whispersystems.textsecuregcm.configuration.GcmConfiguration;
 import org.whispersystems.textsecuregcm.configuration.GcpAttachmentsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.GiftConfiguration;
 import org.whispersystems.textsecuregcm.configuration.MaxDeviceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.MessageCacheConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MessageDynamoDbConfiguration;
-import org.whispersystems.textsecuregcm.configuration.WavefrontConfiguration;
 import org.whispersystems.textsecuregcm.configuration.PaymentsServiceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.PushConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RecaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RedisClusterConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RedisConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RemoteConfigConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ReportMessageConfiguration;
 import org.whispersystems.textsecuregcm.configuration.SecureBackupServiceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.SecureStorageServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.StripeConfiguration;
+import org.whispersystems.textsecuregcm.configuration.SubscriptionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TestDeviceConfiguration;
-import org.whispersystems.textsecuregcm.configuration.MonitoredS3ObjectConfiguration;
-import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TwilioConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
 import org.whispersystems.textsecuregcm.configuration.VoiceVerificationConfiguration;
@@ -56,12 +56,22 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @Valid
   @JsonProperty
-  private TwilioConfiguration twilio;
+  private StripeConfiguration stripe;
 
   @NotNull
   @Valid
   @JsonProperty
-  private PushConfiguration push;
+  private DynamoDbClientConfiguration dynamoDbClientConfiguration;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private DynamoDbTables dynamoDbTables;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private TwilioConfiguration twilio;
 
   @NotNull
   @Valid
@@ -77,11 +87,6 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private CdnConfiguration cdn;
-
-  @NotNull
-  @Valid
-  @JsonProperty
-  private WavefrontConfiguration wavefront;
 
   @NotNull
   @Valid
@@ -111,6 +116,11 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @Valid
   @JsonProperty
+  private DirectoryV2Configuration directoryV2;
+
+  @NotNull
+  @Valid
+  @JsonProperty
   private AccountDatabaseCrawlerConfiguration accountDatabaseCrawler;
 
   @NotNull
@@ -136,61 +146,6 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private MessageDynamoDbConfiguration messageDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration keysDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private AccountsDynamoDbConfiguration accountsDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration migrationDeletedAccountsDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration migrationRetryAccountsDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DeletedAccountsDynamoDbConfiguration deletedAccountsDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration pushChallengeDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration reportMessageDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration pendingAccountsDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DynamoDbConfiguration pendingDevicesDynamoDb;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private DatabaseConfiguration abuseDatabase;
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private List<TestDeviceConfiguration> testDevices = new LinkedList<>();
 
   @Valid
@@ -201,27 +156,12 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private AccountsDatabaseConfiguration accountsDatabase;
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private RateLimitsConfiguration limits = new RateLimitsConfiguration();
 
   @Valid
   @NotNull
   @JsonProperty
-  private JerseyClientConfiguration httpClient = new JerseyClientConfiguration();
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private WebSocketConfiguration webSocket = new WebSocketConfiguration();
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private TurnConfiguration turn;
 
   @Valid
   @NotNull
@@ -281,19 +221,48 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private MonitoredS3ObjectConfiguration torExitNodeList;
-
-  @Valid
-  @NotNull
-  @JsonProperty
-  private MonitoredS3ObjectConfiguration asnTable;
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private DonationConfiguration donation;
 
-  private Map<String, String> transparentDataIndex = new HashMap<>();
+  @Valid
+  @NotNull
+  @JsonProperty
+  private BadgesConfiguration badges;
+
+  @Valid
+  @JsonProperty
+  @NotNull
+  private SubscriptionConfiguration subscription;
+
+  @Valid
+  @JsonProperty
+  @NotNull
+  private BoostConfiguration boost;
+
+  @Valid
+  @JsonProperty
+  @NotNull
+  private GiftConfiguration gift;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private ReportMessageConfiguration reportMessage = new ReportMessageConfiguration();
+
+  @Valid
+  @JsonProperty
+  private AbusiveMessageFilterConfiguration abusiveMessageFilter;
+
+  public StripeConfiguration getStripe() {
+    return stripe;
+  }
+
+  public DynamoDbClientConfiguration getDynamoDbClientConfiguration() {
+    return dynamoDbClientConfiguration;
+  }
+
+  public DynamoDbTables getDynamoDbTables() {
+    return dynamoDbTables;
+  }
 
   public RecaptchaConfiguration getRecaptchaConfiguration() {
     return recaptcha;
@@ -309,14 +278,6 @@ public class WhisperServerConfiguration extends Configuration {
 
   public TwilioConfiguration getTwilioConfiguration() {
     return twilio;
-  }
-
-  public PushConfiguration getPushConfiguration() {
-    return push;
-  }
-
-  public JerseyClientConfiguration getJerseyClientConfiguration() {
-    return httpClient;
   }
 
   public AwsAttachmentsConfiguration getAwsAttachmentsConfiguration() {
@@ -343,6 +304,10 @@ public class WhisperServerConfiguration extends Configuration {
     return directory;
   }
 
+  public DirectoryV2Configuration getDirectoryV2Configuration() {
+    return directoryV2;
+  }
+
   public SecureStorageServiceConfiguration getSecureStorageServiceConfiguration() {
     return storageService;
   }
@@ -367,44 +332,8 @@ public class WhisperServerConfiguration extends Configuration {
     return rateLimitersCluster;
   }
 
-  public MessageDynamoDbConfiguration getMessageDynamoDbConfiguration() {
-    return messageDynamoDb;
-  }
-
-  public DynamoDbConfiguration getKeysDynamoDbConfiguration() {
-    return keysDynamoDb;
-  }
-
-  public AccountsDynamoDbConfiguration getAccountsDynamoDbConfiguration() {
-    return accountsDynamoDb;
-  }
-
-  public DynamoDbConfiguration getMigrationDeletedAccountsDynamoDbConfiguration() {
-    return migrationDeletedAccountsDynamoDb;
-  }
-
-  public DynamoDbConfiguration getMigrationRetryAccountsDynamoDbConfiguration() {
-    return migrationRetryAccountsDynamoDb;
-  }
-
-  public DeletedAccountsDynamoDbConfiguration getDeletedAccountsDynamoDbConfiguration() {
-    return deletedAccountsDynamoDb;
-  }
-
-  public DatabaseConfiguration getAbuseDatabaseConfiguration() {
-    return abuseDatabase;
-  }
-
-  public AccountsDatabaseConfiguration getAccountsDatabaseConfiguration() {
-    return accountsDatabase;
-  }
-
   public RateLimitsConfiguration getLimitsConfiguration() {
     return limits;
-  }
-
-  public TurnConfiguration getTurnConfiguration() {
-    return turn;
   }
 
   public GcmConfiguration getGcmConfiguration() {
@@ -417,10 +346,6 @@ public class WhisperServerConfiguration extends Configuration {
 
   public CdnConfiguration getCdnConfiguration() {
     return cdn;
-  }
-
-  public WavefrontConfiguration getWavefrontConfiguration() {
-    return wavefront;
   }
 
   public DatadogConfiguration getDatadogConfiguration() {
@@ -453,10 +378,6 @@ public class WhisperServerConfiguration extends Configuration {
     return results;
   }
 
-  public Map<String, String> getTransparentDataIndex() {
-    return transparentDataIndex;
-  }
-
   public SecureBackupServiceConfiguration getSecureBackupServiceConfiguration() {
     return backupService;
   }
@@ -477,31 +398,31 @@ public class WhisperServerConfiguration extends Configuration {
     return appConfig;
   }
 
-  public DynamoDbConfiguration getPushChallengeDynamoDbConfiguration() {
-    return pushChallengeDynamoDb;
-  }
-
-  public DynamoDbConfiguration getReportMessageDynamoDbConfiguration() {
-    return reportMessageDynamoDb;
-  }
-
-  public DynamoDbConfiguration getPendingAccountsDynamoDbConfiguration() {
-    return pendingAccountsDynamoDb;
-  }
-
-  public DynamoDbConfiguration getPendingDevicesDynamoDbConfiguration() {
-    return pendingDevicesDynamoDb;
-  }
-
-  public MonitoredS3ObjectConfiguration getTorExitNodeListConfiguration() {
-    return torExitNodeList;
-  }
-
-  public MonitoredS3ObjectConfiguration getAsnTableConfiguration() {
-    return asnTable;
-  }
-
   public DonationConfiguration getDonationConfiguration() {
     return donation;
+  }
+
+  public BadgesConfiguration getBadges() {
+    return badges;
+  }
+
+  public SubscriptionConfiguration getSubscription() {
+    return subscription;
+  }
+
+  public BoostConfiguration getBoost() {
+    return boost;
+  }
+
+  public GiftConfiguration getGift() {
+    return gift;
+  }
+
+  public ReportMessageConfiguration getReportMessageConfiguration() {
+    return reportMessage;
+  }
+
+  public AbusiveMessageFilterConfiguration getAbusiveMessageFilterConfiguration() {
+    return abusiveMessageFilter;
   }
 }

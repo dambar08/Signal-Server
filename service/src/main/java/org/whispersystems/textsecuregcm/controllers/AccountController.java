@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.controllers;
@@ -14,8 +14,9 @@ import com.google.common.annotations.VisibleForTesting;
 import io.dropwizard.auth.Auth;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Tags;
 import java.security.SecureRandom;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -24,11 +25,16 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
+import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
+import javax.validation.constraints.NotNull;
+import javax.ws.rs.BadRequestException;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
+import javax.ws.rs.ForbiddenException;
 import javax.ws.rs.GET;
+import javax.ws.rs.HEAD;
 import javax.ws.rs.HeaderParam;
 import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
@@ -36,30 +42,39 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
 import org.whispersystems.textsecuregcm.auth.AuthenticationCredentials;
-import org.whispersystems.textsecuregcm.auth.AuthorizationHeader;
-import org.whispersystems.textsecuregcm.auth.DisabledPermittedAccount;
+import org.whispersystems.textsecuregcm.auth.BasicAuthorizationHeader;
+import org.whispersystems.textsecuregcm.auth.ChangesDeviceEnabledState;
+import org.whispersystems.textsecuregcm.auth.DisabledPermittedAuthenticatedAccount;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialGenerator;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
-import org.whispersystems.textsecuregcm.auth.InvalidAuthorizationHeaderException;
 import org.whispersystems.textsecuregcm.auth.StoredRegistrationLock;
 import org.whispersystems.textsecuregcm.auth.StoredVerificationCode;
 import org.whispersystems.textsecuregcm.auth.TurnToken;
 import org.whispersystems.textsecuregcm.auth.TurnTokenGenerator;
-import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicSignupCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.AccountAttributes;
-import org.whispersystems.textsecuregcm.entities.AccountCreationResult;
+import org.whispersystems.textsecuregcm.entities.AccountIdentityResponse;
 import org.whispersystems.textsecuregcm.entities.ApnRegistrationId;
-import org.whispersystems.textsecuregcm.entities.DeprecatedPin;
+import org.whispersystems.textsecuregcm.entities.ChangePhoneNumberRequest;
 import org.whispersystems.textsecuregcm.entities.DeviceName;
 import org.whispersystems.textsecuregcm.entities.GcmRegistrationId;
+import org.whispersystems.textsecuregcm.entities.IncomingMessage;
+import org.whispersystems.textsecuregcm.entities.MismatchedDevices;
 import org.whispersystems.textsecuregcm.entities.RegistrationLock;
 import org.whispersystems.textsecuregcm.entities.RegistrationLockFailure;
+import org.whispersystems.textsecuregcm.entities.StaleDevices;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
+import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.push.APNSender;
 import org.whispersystems.textsecuregcm.push.ApnMessage;
@@ -68,19 +83,21 @@ import org.whispersystems.textsecuregcm.push.GcmMessage;
 import org.whispersystems.textsecuregcm.recaptcha.RecaptchaClient;
 import org.whispersystems.textsecuregcm.sms.SmsSender;
 import org.whispersystems.textsecuregcm.sms.TwilioVerifyExperimentEnrollmentManager;
-import org.whispersystems.textsecuregcm.sqs.DirectoryQueue;
-import org.whispersystems.textsecuregcm.storage.AbusiveHostRule;
 import org.whispersystems.textsecuregcm.storage.AbusiveHostRules;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.storage.ChangeNumberManager;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
-import org.whispersystems.textsecuregcm.storage.MessagesManager;
-import org.whispersystems.textsecuregcm.storage.PendingAccountsManager;
-import org.whispersystems.textsecuregcm.storage.UsernamesManager;
+import org.whispersystems.textsecuregcm.storage.StoredVerificationCodeManager;
+import org.whispersystems.textsecuregcm.storage.UsernameNotAvailableException;
 import org.whispersystems.textsecuregcm.util.Constants;
 import org.whispersystems.textsecuregcm.util.ForwardedIpUtil;
 import org.whispersystems.textsecuregcm.util.Hex;
+import org.whispersystems.textsecuregcm.util.ImpossiblePhoneNumberException;
+import org.whispersystems.textsecuregcm.util.MessageValidation;
+import org.whispersystems.textsecuregcm.util.NonNormalizedPhoneNumberException;
+import org.whispersystems.textsecuregcm.util.Username;
 import org.whispersystems.textsecuregcm.util.Util;
 import org.whispersystems.textsecuregcm.util.VerificationCode;
 
@@ -88,98 +105,94 @@ import org.whispersystems.textsecuregcm.util.VerificationCode;
 @Path("/v1/accounts")
 public class AccountController {
 
-  private final Logger         logger                 = LoggerFactory.getLogger(AccountController.class);
-  private final MetricRegistry metricRegistry         = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
-  private final Meter          newUserMeter           = metricRegistry.meter(name(AccountController.class, "brand_new_user"     ));
-  private final Meter          blockedHostMeter       = metricRegistry.meter(name(AccountController.class, "blocked_host"       ));
-  private final Meter          filteredHostMeter      = metricRegistry.meter(name(AccountController.class, "filtered_host"      ));
-  private final Meter          rateLimitedHostMeter   = metricRegistry.meter(name(AccountController.class, "rate_limited_host"  ));
-  private final Meter          rateLimitedPrefixMeter = metricRegistry.meter(name(AccountController.class, "rate_limited_prefix"));
-  private final Meter          captchaRequiredMeter   = metricRegistry.meter(name(AccountController.class, "captcha_required"   ));
-  private final Meter          captchaSuccessMeter    = metricRegistry.meter(name(AccountController.class, "captcha_success"    ));
-  private final Meter          captchaFailureMeter    = metricRegistry.meter(name(AccountController.class, "captcha_failure"    ));
+  private final Logger         logger                   = LoggerFactory.getLogger(AccountController.class);
+  private final MetricRegistry metricRegistry           = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
+  private final Meter          blockedHostMeter         = metricRegistry.meter(name(AccountController.class, "blocked_host"             ));
+  private final Meter          countryFilterApplicable  = metricRegistry.meter(name(AccountController.class, "country_filter_applicable"));
+  private final Meter          countryFilteredHostMeter = metricRegistry.meter(name(AccountController.class, "country_limited_host"     ));
+  private final Meter          rateLimitedHostMeter     = metricRegistry.meter(name(AccountController.class, "rate_limited_host"        ));
+  private final Meter          rateLimitedPrefixMeter   = metricRegistry.meter(name(AccountController.class, "rate_limited_prefix"      ));
+  private final Meter          captchaRequiredMeter     = metricRegistry.meter(name(AccountController.class, "captcha_required"         ));
 
   private static final String PUSH_CHALLENGE_COUNTER_NAME = name(AccountController.class, "pushChallenge");
   private static final String ACCOUNT_CREATE_COUNTER_NAME = name(AccountController.class, "create");
   private static final String ACCOUNT_VERIFY_COUNTER_NAME = name(AccountController.class, "verify");
+  private static final String CAPTCHA_ATTEMPT_COUNTER_NAME = name(AccountController.class, "captcha");
+  private static final String CHALLENGE_ISSUED_COUNTER_NAME = name(AccountController.class, "challengeIssued");
 
   private static final String TWILIO_VERIFY_ERROR_COUNTER_NAME = name(AccountController.class, "twilioVerifyError");
+
+  private static final String INVALID_ACCEPT_LANGUAGE_COUNTER_NAME = name(AccountController.class, "invalidAcceptLanguage");
 
   private static final String CHALLENGE_PRESENT_TAG_NAME = "present";
   private static final String CHALLENGE_MATCH_TAG_NAME = "matches";
   private static final String COUNTRY_CODE_TAG_NAME = "countryCode";
-  private static final String VERFICATION_TRANSPORT_TAG_NAME = "transport";
+  private static final String VERIFICATION_TRANSPORT_TAG_NAME = "transport";
 
   private static final String VERIFY_EXPERIMENT_TAG_NAME = "twilioVerify";
 
-  private final PendingAccountsManager             pendingAccounts;
+  private final StoredVerificationCodeManager      pendingAccounts;
   private final AccountsManager                    accounts;
-  private final UsernamesManager                   usernames;
   private final AbusiveHostRules                   abusiveHostRules;
   private final RateLimiters                       rateLimiters;
   private final SmsSender                          smsSender;
-  private final DirectoryQueue                     directoryQueue;
-  private final MessagesManager                    messagesManager;
-  private final DynamicConfigurationManager        dynamicConfigurationManager;
+  private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
   private final TurnTokenGenerator                 turnTokenGenerator;
   private final Map<String, Integer>               testDevices;
-  private final RecaptchaClient                    recaptchaClient;
+  private final RecaptchaClient recaptchaClient;
   private final GCMSender                          gcmSender;
   private final APNSender                          apnSender;
   private final ExternalServiceCredentialGenerator backupServiceCredentialGenerator;
 
   private final TwilioVerifyExperimentEnrollmentManager verifyExperimentEnrollmentManager;
+  private final ChangeNumberManager changeNumberManager;
 
-  public AccountController(PendingAccountsManager pendingAccounts,
+  public AccountController(StoredVerificationCodeManager pendingAccounts,
                            AccountsManager accounts,
-                           UsernamesManager usernames,
                            AbusiveHostRules abusiveHostRules,
                            RateLimiters rateLimiters,
                            SmsSender smsSenderFactory,
-                           DirectoryQueue directoryQueue,
-                           MessagesManager messagesManager,
-                           DynamicConfigurationManager dynamicConfigurationManager,
+                           DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
                            TurnTokenGenerator turnTokenGenerator,
                            Map<String, Integer> testDevices,
                            RecaptchaClient recaptchaClient,
                            GCMSender gcmSender,
                            APNSender apnSender,
-                           ExternalServiceCredentialGenerator backupServiceCredentialGenerator,
-                           TwilioVerifyExperimentEnrollmentManager verifyExperimentEnrollmentManager)
+                           TwilioVerifyExperimentEnrollmentManager verifyExperimentEnrollmentManager,
+                           ChangeNumberManager changeNumberManager,
+                           ExternalServiceCredentialGenerator backupServiceCredentialGenerator)
   {
     this.pendingAccounts                   = pendingAccounts;
     this.accounts                          = accounts;
-    this.usernames                         = usernames;
     this.abusiveHostRules                  = abusiveHostRules;
     this.rateLimiters                      = rateLimiters;
     this.smsSender                         = smsSenderFactory;
-    this.directoryQueue                    = directoryQueue;
-    this.messagesManager                   = messagesManager;
     this.dynamicConfigurationManager       = dynamicConfigurationManager;
     this.testDevices                       = testDevices;
     this.turnTokenGenerator                = turnTokenGenerator;
-    this.recaptchaClient                   = recaptchaClient;
+    this.recaptchaClient = recaptchaClient;
     this.gcmSender                         = gcmSender;
     this.apnSender                         = apnSender;
-    this.backupServiceCredentialGenerator  = backupServiceCredentialGenerator;
     this.verifyExperimentEnrollmentManager = verifyExperimentEnrollmentManager;
+    this.backupServiceCredentialGenerator = backupServiceCredentialGenerator;
+    this.changeNumberManager = changeNumberManager;
   }
 
   @Timed
   @GET
   @Path("/{type}/preauth/{token}/{number}")
+  @Produces(MediaType.APPLICATION_JSON)
   public Response getPreAuth(@PathParam("type")   String pushType,
                              @PathParam("token")  String pushToken,
                              @PathParam("number") String number,
                              @QueryParam("voip")  Optional<Boolean> useVoip)
-  {
+      throws ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+
     if (!"apn".equals(pushType) && !"fcm".equals(pushType)) {
       return Response.status(400).build();
     }
 
-    if (!Util.isValidNumber(number)) {
-      return Response.status(400).build();
-    }
+    Util.requireNormalizedNumber(number);
 
     String                 pushChallenge          = generatePushChallenge();
     StoredVerificationCode storedVerificationCode = new StoredVerificationCode(null,
@@ -190,9 +203,9 @@ public class AccountController {
     pendingAccounts.store(number, storedVerificationCode);
 
     if ("fcm".equals(pushType)) {
-      gcmSender.sendMessage(new GcmMessage(pushToken, number, 0, GcmMessage.Type.CHALLENGE, Optional.of(storedVerificationCode.getPushCode())));
+      gcmSender.sendMessage(new GcmMessage(pushToken, null, 0, GcmMessage.Type.CHALLENGE, Optional.of(storedVerificationCode.getPushCode())));
     } else if ("apn".equals(pushType)) {
-      apnSender.sendMessage(new ApnMessage(pushToken, number, 0, useVoip.orElse(true), ApnMessage.Type.CHALLENGE, Optional.of(storedVerificationCode.getPushCode())));
+      apnSender.sendMessage(new ApnMessage(pushToken, null, 0, useVoip.orElse(true), ApnMessage.Type.CHALLENGE, Optional.of(storedVerificationCode.getPushCode())));
     } else {
       throw new AssertionError();
     }
@@ -203,6 +216,7 @@ public class AccountController {
   @Timed
   @GET
   @Path("/{transport}/code/{number}")
+  @Produces(MediaType.APPLICATION_JSON)
   public Response createAccount(@PathParam("transport")         String transport,
                                 @PathParam("number")            String number,
                                 @HeaderParam("X-Forwarded-For") String forwardedFor,
@@ -211,51 +225,40 @@ public class AccountController {
                                 @QueryParam("client")           Optional<String> client,
                                 @QueryParam("captcha")          Optional<String> captcha,
                                 @QueryParam("challenge")        Optional<String> pushChallenge)
-      throws RateLimitExceededException, RetryLaterException
-  {
-    if (!Util.isValidNumber(number)) {
-      logger.info("Invalid number: " + number);
-      throw new WebApplicationException(Response.status(400).build());
-    }
+      throws RateLimitExceededException, ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
 
-    if (number.startsWith("+98")) {
-      transport = "voice";
-    }
+    Util.requireNormalizedNumber(number);
 
-    String requester = ForwardedIpUtil.getMostRecentProxy(forwardedFor).orElseThrow();
+    String sourceHost = ForwardedIpUtil.getMostRecentProxy(forwardedFor).orElseThrow();
 
     Optional<StoredVerificationCode> storedChallenge = pendingAccounts.getCodeForNumber(number);
-    CaptchaRequirement               requirement     = requiresCaptcha(number, transport, forwardedFor, requester, captcha, storedChallenge, pushChallenge);
+    CaptchaRequirement requirement = requiresCaptcha(number, transport, forwardedFor, sourceHost, captcha,
+        storedChallenge, pushChallenge, userAgent);
 
     if (requirement.isCaptchaRequired()) {
       captchaRequiredMeter.mark();
 
-      if (requirement.isAutoBlock() && shouldAutoBlock(requester)) {
-        logger.info("Auto-block: " + requester);
-        abusiveHostRules.setBlockedHost(requester, "Auto-Block");
+      final Tags tags = Tags.of(
+          UserAgentTagUtil.getPlatformTag(userAgent),
+          Tag.of(COUNTRY_CODE_TAG_NAME, Util.getCountryCode(number)));
+
+      Metrics.counter(CHALLENGE_ISSUED_COUNTER_NAME, tags).increment();
+
+      if (requirement.isAutoBlock() && shouldAutoBlock(sourceHost)) {
+        logger.info("Auto-block: {}", sourceHost);
+        abusiveHostRules.setBlockedHost(sourceHost);
       }
 
       return Response.status(402).build();
     }
 
-    try {
-      switch (transport) {
-        case "sms":
-          rateLimiters.getSmsDestinationLimiter().validate(number);
-          break;
-        case "voice":
-          rateLimiters.getVoiceDestinationLimiter().validate(number);
-          rateLimiters.getVoiceDestinationDailyLimiter().validate(number);
-          break;
-        default:
-          throw new WebApplicationException(Response.status(422).build());
+    switch (transport) {
+      case "sms" -> rateLimiters.getSmsDestinationLimiter().validate(number);
+      case "voice" -> {
+        rateLimiters.getVoiceDestinationLimiter().validate(number);
+        rateLimiters.getVoiceDestinationDailyLimiter().validate(number);
       }
-    } catch (RateLimitExceededException e) {
-      if (!e.getRetryDuration().isNegative()) {
-        throw new RetryLaterException(e);
-      } else {
-        throw e;
-      }
+      default -> throw new WebApplicationException(Response.status(422).build());
     }
 
     VerificationCode       verificationCode       = generateVerificationCode(number);
@@ -266,12 +269,17 @@ public class AccountController {
 
     pendingAccounts.store(number, storedVerificationCode);
 
-    final List<Locale.LanguageRange> languageRanges;
-
+    List<Locale.LanguageRange> languageRanges;
     try {
       languageRanges = acceptLanguage.map(Locale.LanguageRange::parse).orElse(Collections.emptyList());
     } catch (final IllegalArgumentException e) {
-      return Response.status(400).build();
+      logger.debug("Could not get acceptable languages; Accept-Language: {}; User-Agent: {}",
+          acceptLanguage.orElse(""),
+          userAgent,
+          e);
+
+      Metrics.counter(INVALID_ACCEPT_LANGUAGE_COUNTER_NAME, Tags.of(UserAgentTagUtil.getPlatformTag(userAgent))).increment();
+      languageRanges = Collections.emptyList();
     }
 
     final boolean enrolledInVerifyExperiment = verifyExperimentEnrollmentManager.isEnrolled(client, number, languageRanges, transport);
@@ -318,12 +326,13 @@ public class AccountController {
       });
     });
 
+    // TODO Remove this meter when external dependencies have been resolved
     metricRegistry.meter(name(AccountController.class, "create", Util.getCountryCode(number))).mark();
 
     {
       final List<Tag> tags = new ArrayList<>();
       tags.add(Tag.of(COUNTRY_CODE_TAG_NAME, Util.getCountryCode(number)));
-      tags.add(Tag.of(VERFICATION_TRANSPORT_TAG_NAME, transport));
+      tags.add(Tag.of(VERIFICATION_TRANSPORT_TAG_NAME, transport));
       tags.add(UserAgentTagUtil.getPlatformTag(userAgent));
       tags.add(Tag.of(VERIFY_EXPERIMENT_TAG_NAME, String.valueOf(enrolledInVerifyExperiment)));
 
@@ -338,328 +347,418 @@ public class AccountController {
   @Consumes(MediaType.APPLICATION_JSON)
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/code/{verification_code}")
-  public AccountCreationResult verifyAccount(@PathParam("verification_code") String verificationCode,
-                                             @HeaderParam("Authorization")   String authorizationHeader,
-                                             @HeaderParam("X-Signal-Agent")  String signalAgent,
-                                             @HeaderParam("User-Agent")      String userAgent,
-                                             @QueryParam("transfer")         Optional<Boolean> availableForTransfer,
-                                             @Valid                          AccountAttributes accountAttributes)
-      throws RateLimitExceededException
-  {
-    try {
-      AuthorizationHeader header = AuthorizationHeader.fromFullHeader(authorizationHeader);
-      String number              = header.getIdentifier().getNumber();
-      String password            = header.getPassword();
+  public AccountIdentityResponse verifyAccount(@PathParam("verification_code") String verificationCode,
+                                             @HeaderParam("Authorization") BasicAuthorizationHeader authorizationHeader,
+                                             @HeaderParam("X-Signal-Agent") String signalAgent,
+                                             @HeaderParam("User-Agent") String userAgent,
+                                             @QueryParam("transfer") Optional<Boolean> availableForTransfer,
+                                             @NotNull @Valid AccountAttributes accountAttributes)
+      throws RateLimitExceededException, InterruptedException {
 
-      if (number == null) {
-        throw new WebApplicationException(400);
+    String number = authorizationHeader.getUsername();
+    String password = authorizationHeader.getPassword();
+
+    rateLimiters.getVerifyLimiter().validate(number);
+
+    // Note that successful verification depends on being able to find a stored verification code for the given number.
+    // We check that numbers are normalized before we store verification codes, and so don't need to re-assert
+    // normalization here.
+    Optional<StoredVerificationCode> storedVerificationCode = pendingAccounts.getCodeForNumber(number);
+
+    if (storedVerificationCode.isEmpty() || !storedVerificationCode.get().isValid(verificationCode)) {
+      throw new WebApplicationException(Response.status(403).build());
+    }
+
+    storedVerificationCode.flatMap(StoredVerificationCode::getTwilioVerificationSid)
+        .ifPresent(smsSender::reportVerificationSucceeded);
+
+    Optional<Account> existingAccount = accounts.getByE164(number);
+
+    if (existingAccount.isPresent()) {
+      verifyRegistrationLock(existingAccount.get(), accountAttributes.getRegistrationLock());
+    }
+
+    if (availableForTransfer.orElse(false) && existingAccount.map(Account::isTransferSupported).orElse(false)) {
+      throw new WebApplicationException(Response.status(409).build());
+    }
+
+    rateLimiters.getVerifyLimiter().clear(number);
+
+    Account account = accounts.create(number, password, signalAgent, accountAttributes,
+        existingAccount.map(Account::getBadges).orElseGet(ArrayList::new));
+
+    {
+      metricRegistry.meter(name(AccountController.class, "verify", Util.getCountryCode(number))).mark();
+
+      final List<Tag> tags = new ArrayList<>();
+      tags.add(Tag.of(COUNTRY_CODE_TAG_NAME, Util.getCountryCode(number)));
+      tags.add(UserAgentTagUtil.getPlatformTag(userAgent));
+      tags.add(Tag.of(VERIFY_EXPERIMENT_TAG_NAME, String.valueOf(storedVerificationCode.get().getTwilioVerificationSid().isPresent())));
+
+      Metrics.counter(ACCOUNT_VERIFY_COUNTER_NAME, tags).increment();
+    }
+
+    return new AccountIdentityResponse(account.getUuid(),
+        account.getNumber(),
+        account.getPhoneNumberIdentifier(),
+        account.getUsername().orElse(null),
+        existingAccount.map(Account::isStorageSupported).orElse(false));
+  }
+
+  @Timed
+  @PUT
+  @Path("/number")
+  @Produces(MediaType.APPLICATION_JSON)
+  public AccountIdentityResponse changeNumber(@Auth final AuthenticatedAccount authenticatedAccount, @NotNull @Valid final ChangePhoneNumberRequest request)
+      throws RateLimitExceededException, InterruptedException, ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+
+    if (!authenticatedAccount.getAuthenticatedDevice().isMaster()) {
+      throw new ForbiddenException();
+    }
+
+    if (request.getDeviceSignedPrekeys() != null && !request.getDeviceSignedPrekeys().isEmpty()) {
+      if (request.getDeviceMessages() == null || request.getDeviceMessages().size() != request.getDeviceSignedPrekeys().size() - 1) {
+        // device_messages should exist and be one shorter than device_signed_prekeys, since it doesn't have the primary's key.
+        throw new WebApplicationException(Response.status(400).build());
       }
+      try {
+        // Checks that all except master ID are in device messages
+        MessageValidation.validateCompleteDeviceList(
+            authenticatedAccount.getAccount(), request.getDeviceMessages(),
+            IncomingMessage::getDestinationDeviceId, true, Optional.of(Device.MASTER_ID));
+        MessageValidation.validateRegistrationIds(
+            authenticatedAccount.getAccount(), request.getDeviceMessages(),
+            IncomingMessage::getDestinationDeviceId, IncomingMessage::getDestinationRegistrationId);
+        // Checks that all including master ID are in signed prekeys
+        MessageValidation.validateCompleteDeviceList(
+            authenticatedAccount.getAccount(), request.getDeviceSignedPrekeys().entrySet(),
+            e -> e.getKey(), false, Optional.empty());
+      } catch (MismatchedDevicesException e) {
+        throw new WebApplicationException(Response.status(409)
+            .type(MediaType.APPLICATION_JSON_TYPE)
+            .entity(new MismatchedDevices(e.getMissingDevices(),
+                e.getExtraDevices()))
+            .build());
+      } catch (StaleDevicesException e) {
+        throw new WebApplicationException(Response.status(410)
+            .type(MediaType.APPLICATION_JSON)
+            .entity(new StaleDevices(e.getStaleDevices()))
+            .build());
+      }
+    } else if (request.getDeviceMessages() != null && !request.getDeviceMessages().isEmpty()) {
+      // device_messages shouldn't exist without device_signed_prekeys.
+      throw new WebApplicationException(Response.status(400).build());
+    }
+
+    final String number = request.getNumber();
+    if (!authenticatedAccount.getAccount().getNumber().equals(number)) {
+      Util.requireNormalizedNumber(number);
 
       rateLimiters.getVerifyLimiter().validate(number);
 
-      Optional<StoredVerificationCode> storedVerificationCode = pendingAccounts.getCodeForNumber(number);
+      final Optional<StoredVerificationCode> storedVerificationCode =
+          pendingAccounts.getCodeForNumber(number);
 
-      if (storedVerificationCode.isEmpty() || !storedVerificationCode.get().isValid(verificationCode)) {
-        throw new WebApplicationException(Response.status(403).build());
+      if (storedVerificationCode.isEmpty() || !storedVerificationCode.get().isValid(request.getCode())) {
+        throw new ForbiddenException();
       }
 
       storedVerificationCode.flatMap(StoredVerificationCode::getTwilioVerificationSid)
           .ifPresent(smsSender::reportVerificationSucceeded);
 
-      Optional<Account>                    existingAccount           = accounts.get(number);
-      Optional<StoredRegistrationLock>     existingRegistrationLock  = existingAccount.map(Account::getRegistrationLock);
-      Optional<ExternalServiceCredentials> existingBackupCredentials = existingAccount.map(Account::getUuid)
-                                                                                      .map(uuid -> backupServiceCredentialGenerator.generateFor(uuid.toString()));
+      final Optional<Account> existingAccount = accounts.getByE164(number);
 
-      if (existingRegistrationLock.isPresent() && existingRegistrationLock.get().requiresClientRegistrationLock()) {
-        rateLimiters.getVerifyLimiter().clear(number);
-
-        if (!Util.isEmpty(accountAttributes.getRegistrationLock()) || !Util.isEmpty(accountAttributes.getPin())) {
-          rateLimiters.getPinLimiter().validate(number);
-        }
-
-        if (!existingRegistrationLock.get().verify(accountAttributes.getRegistrationLock(), accountAttributes.getPin())) {
-          throw new WebApplicationException(Response.status(423)
-                                                    .entity(new RegistrationLockFailure(existingRegistrationLock.get().getTimeRemaining(),
-                                                                                        existingRegistrationLock.get().needsFailureCredentials() ? existingBackupCredentials.orElseThrow() : null))
-                                                    .build());
-        }
-
-        rateLimiters.getPinLimiter().clear(number);
+      if (existingAccount.isPresent()) {
+        verifyRegistrationLock(existingAccount.get(), request.getRegistrationLock());
       }
 
-      if (availableForTransfer.orElse(false) && existingAccount.map(Account::isTransferSupported).orElse(false)) {
-        throw new WebApplicationException(Response.status(409).build());
-      }
-
-      Account account = createAccount(number, password, signalAgent, accountAttributes);
-
-      {
-        metricRegistry.meter(name(AccountController.class, "verify", Util.getCountryCode(number))).mark();
-
-        final List<Tag> tags = new ArrayList<>();
-        tags.add(Tag.of(COUNTRY_CODE_TAG_NAME, Util.getCountryCode(number)));
-        tags.add(UserAgentTagUtil.getPlatformTag(userAgent));
-        tags.add(Tag.of(VERIFY_EXPERIMENT_TAG_NAME, String.valueOf(storedVerificationCode.get().getTwilioVerificationSid().isPresent())));
-
-        Metrics.counter(ACCOUNT_VERIFY_COUNTER_NAME, tags).increment();
-
-        Metrics.timer(name(AccountController.class, "verifyDuration"), tags)
-            .record(Instant.now().toEpochMilli() - storedVerificationCode.get().getTimestamp(), TimeUnit.MILLISECONDS);
-      }
-
-      return new AccountCreationResult(account.getUuid(), existingAccount.map(Account::isStorageSupported).orElse(false));
-    } catch (InvalidAuthorizationHeaderException e) {
-      logger.info("Bad Authorization Header", e);
-      throw new WebApplicationException(Response.status(401).build());
+      rateLimiters.getVerifyLimiter().clear(number);
     }
+
+    final Account updatedAccount = changeNumberManager.changeNumber(
+        authenticatedAccount.getAccount(),
+        request.getNumber(),
+        Optional.ofNullable(request.getDeviceSignedPrekeys()).orElse(Collections.emptyMap()),
+        Optional.ofNullable(request.getDeviceMessages()).orElse(Collections.emptyList()));
+
+    return new AccountIdentityResponse(
+        updatedAccount.getUuid(),
+        updatedAccount.getNumber(),
+        updatedAccount.getPhoneNumberIdentifier(),
+        updatedAccount.getUsername().orElse(null),
+        updatedAccount.isStorageSupported());
   }
 
   @Timed
   @GET
   @Path("/turn/")
   @Produces(MediaType.APPLICATION_JSON)
-  public TurnToken getTurnToken(@Auth Account account) throws RateLimitExceededException {
-    rateLimiters.getTurnLimiter().validate(account.getNumber());
-    return turnTokenGenerator.generate();
+  public TurnToken getTurnToken(@Auth AuthenticatedAccount auth) throws RateLimitExceededException {
+    rateLimiters.getTurnLimiter().validate(auth.getAccount().getUuid());
+    return turnTokenGenerator.generate(auth.getAccount().getNumber());
   }
 
   @Timed
   @PUT
   @Path("/gcm/")
   @Consumes(MediaType.APPLICATION_JSON)
-  public void setGcmRegistrationId(@Auth DisabledPermittedAccount disabledPermittedAccount, @Valid GcmRegistrationId registrationId) {
-    Account account           = disabledPermittedAccount.getAccount();
-    Device  device            = account.getAuthenticatedDevice().get();
-    boolean wasAccountEnabled = account.isEnabled();
+  @ChangesDeviceEnabledState
+  public void setGcmRegistrationId(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth,
+      @NotNull @Valid GcmRegistrationId registrationId) {
+    Account account = disabledPermittedAuth.getAccount();
+    Device device = disabledPermittedAuth.getAuthenticatedDevice();
 
     if (device.getGcmId() != null &&
-        device.getGcmId().equals(registrationId.getGcmRegistrationId()))
-    {
+        device.getGcmId().equals(registrationId.getGcmRegistrationId())) {
       return;
     }
 
-    device.setApnId(null);
-    device.setVoipApnId(null);
-    device.setGcmId(registrationId.getGcmRegistrationId());
-    device.setFetchesMessages(false);
-
-    accounts.update(account);
-
-    if (!wasAccountEnabled && account.isEnabled()) {
-      directoryQueue.refreshRegisteredUser(account);
-    }
+    accounts.updateDevice(account, device.getId(), d -> {
+      d.setApnId(null);
+      d.setVoipApnId(null);
+      d.setGcmId(registrationId.getGcmRegistrationId());
+      d.setFetchesMessages(false);
+    });
   }
 
   @Timed
   @DELETE
   @Path("/gcm/")
-  public void deleteGcmRegistrationId(@Auth DisabledPermittedAccount disabledPermittedAccount) {
-    Account account = disabledPermittedAccount.getAccount();
-    Device  device  = account.getAuthenticatedDevice().get();
-    device.setGcmId(null);
-    device.setFetchesMessages(false);
-    device.setUserAgent("OWA");
+  @ChangesDeviceEnabledState
+  public void deleteGcmRegistrationId(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth) {
+    Account account = disabledPermittedAuth.getAccount();
+    Device device = disabledPermittedAuth.getAuthenticatedDevice();
 
-    accounts.update(account);
-    directoryQueue.refreshRegisteredUser(account);
+    accounts.updateDevice(account, device.getId(), d -> {
+      d.setGcmId(null);
+      d.setFetchesMessages(false);
+      d.setUserAgent("OWA");
+    });
   }
 
   @Timed
   @PUT
   @Path("/apn/")
   @Consumes(MediaType.APPLICATION_JSON)
-  public void setApnRegistrationId(@Auth DisabledPermittedAccount disabledPermittedAccount, @Valid ApnRegistrationId registrationId) {
-    Account account           = disabledPermittedAccount.getAccount();
-    Device  device            = account.getAuthenticatedDevice().get();
-    boolean wasAccountEnabled = account.isEnabled();
+  @ChangesDeviceEnabledState
+  public void setApnRegistrationId(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth,
+      @NotNull @Valid ApnRegistrationId registrationId) {
+    Account account = disabledPermittedAuth.getAccount();
+    Device device = disabledPermittedAuth.getAuthenticatedDevice();
 
-    device.setApnId(registrationId.getApnRegistrationId());
-    device.setVoipApnId(registrationId.getVoipRegistrationId());
-    device.setGcmId(null);
-    device.setFetchesMessages(false);
-    accounts.update(account);
-
-    if (!wasAccountEnabled && account.isEnabled()) {
-      directoryQueue.refreshRegisteredUser(account);
-    }
+    accounts.updateDevice(account, device.getId(), d -> {
+      d.setApnId(registrationId.getApnRegistrationId());
+      d.setVoipApnId(registrationId.getVoipRegistrationId());
+      d.setGcmId(null);
+      d.setFetchesMessages(false);
+    });
   }
 
   @Timed
   @DELETE
   @Path("/apn/")
-  public void deleteApnRegistrationId(@Auth DisabledPermittedAccount disabledPermittedAccount) {
-    Account account = disabledPermittedAccount.getAccount();
-    Device  device  = account.getAuthenticatedDevice().get();
-    device.setApnId(null);
-    device.setFetchesMessages(false);
-    if (device.getId() == 1) {
-      device.setUserAgent("OWI");
-    } else {
-      device.setUserAgent("OWP");
-    }
+  @ChangesDeviceEnabledState
+  public void deleteApnRegistrationId(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth) {
+    Account account = disabledPermittedAuth.getAccount();
+    Device device = disabledPermittedAuth.getAuthenticatedDevice();
 
-    accounts.update(account);
-    directoryQueue.refreshRegisteredUser(account);
+    accounts.updateDevice(account, device.getId(), d -> {
+      d.setApnId(null);
+      d.setFetchesMessages(false);
+      if (d.getId() == 1) {
+        d.setUserAgent("OWI");
+      } else {
+        d.setUserAgent("OWP");
+      }
+    });
   }
 
   @Timed
   @PUT
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/registration_lock")
-  public void setRegistrationLock(@Auth Account account, @Valid RegistrationLock accountLock) {
+  public void setRegistrationLock(@Auth AuthenticatedAccount auth, @NotNull @Valid RegistrationLock accountLock) {
     AuthenticationCredentials credentials = new AuthenticationCredentials(accountLock.getRegistrationLock());
-    account.setRegistrationLock(credentials.getHashedAuthenticationToken(), credentials.getSalt());
-    account.setPin(null);
 
-    accounts.update(account);
+    accounts.update(auth.getAccount(),
+        a -> a.setRegistrationLock(credentials.getHashedAuthenticationToken(), credentials.getSalt()));
   }
 
   @Timed
   @DELETE
   @Path("/registration_lock")
-  public void removeRegistrationLock(@Auth Account account) {
-    account.setRegistrationLock(null, null);
-    accounts.update(account);
-  }
-
-  @Timed
-  @PUT
-  @Produces(MediaType.APPLICATION_JSON)
-  @Path("/pin/")
-  public void setPin(@Auth Account account, @Valid DeprecatedPin accountLock, @HeaderParam("User-Agent") String userAgent) {
-    // TODO Remove once PIN-based reglocks have been deprecated
-    logger.info("PIN set by User-Agent: {}", userAgent);
-
-    account.setPin(accountLock.getPin());
-    account.setRegistrationLock(null, null);
-
-    accounts.update(account);
-  }
-
-  @Timed
-  @DELETE
-  @Path("/pin/")
-  public void removePin(@Auth Account account, @HeaderParam("User-Agent") String userAgent) {
-    // TODO Remove once PIN-based reglocks have been deprecated
-    logger.info("PIN removed by User-Agent: {}", userAgent);
-
-    account.setPin(null);
-    accounts.update(account);
+  public void removeRegistrationLock(@Auth AuthenticatedAccount auth) {
+    accounts.update(auth.getAccount(), a -> a.setRegistrationLock(null, null));
   }
 
   @Timed
   @PUT
   @Path("/name/")
-  public void setName(@Auth DisabledPermittedAccount disabledPermittedAccount, @Valid DeviceName deviceName) {
-    Account account = disabledPermittedAccount.getAccount();
-    account.getAuthenticatedDevice().get().setName(deviceName.getDeviceName());
-    accounts.update(account);
+  public void setName(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth, @NotNull @Valid DeviceName deviceName) {
+    Account account = disabledPermittedAuth.getAccount();
+    Device device = disabledPermittedAuth.getAuthenticatedDevice();
+    accounts.updateDevice(account, device.getId(), d -> d.setName(deviceName.getDeviceName()));
   }
 
   @Timed
   @DELETE
   @Path("/signaling_key")
-  public void removeSignalingKey(@Auth DisabledPermittedAccount disabledPermittedAccount) {
+  public void removeSignalingKey(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth) {
   }
 
   @Timed
   @PUT
   @Path("/attributes/")
   @Consumes(MediaType.APPLICATION_JSON)
-  public void setAccountAttributes(@Auth DisabledPermittedAccount disabledPermittedAccount,
-                                   @HeaderParam("X-Signal-Agent") String userAgent,
-                                   @Valid AccountAttributes attributes)
-  {
-    Account account = disabledPermittedAccount.getAccount();
-    Device  device  = account.getAuthenticatedDevice().get();
+  @Produces(MediaType.APPLICATION_JSON)
+  @ChangesDeviceEnabledState
+  public void setAccountAttributes(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth,
+      @HeaderParam("X-Signal-Agent") String userAgent,
+      @NotNull @Valid AccountAttributes attributes) {
+    Account account = disabledPermittedAuth.getAccount();
+    long deviceId = disabledPermittedAuth.getAuthenticatedDevice().getId();
 
-    device.setFetchesMessages(attributes.getFetchesMessages());
-    device.setName(attributes.getName());
-    device.setLastSeen(Util.todayInMillis());
-    device.setCapabilities(attributes.getCapabilities());
-    device.setRegistrationId(attributes.getRegistrationId());
-    device.setUserAgent(userAgent);
+    accounts.update(account, a -> {
+      a.getDevice(deviceId).ifPresent(d -> {
+        d.setFetchesMessages(attributes.getFetchesMessages());
+        d.setName(attributes.getName());
+        d.setLastSeen(Util.todayInMillis());
+        d.setCapabilities(attributes.getCapabilities());
+        d.setRegistrationId(attributes.getRegistrationId());
+        d.setUserAgent(userAgent);
+      });
 
-    setAccountRegistrationLockFromAttributes(account, attributes);
-
-    final boolean hasDiscoverabilityChange = (account.isDiscoverableByPhoneNumber() != attributes.isDiscoverableByPhoneNumber());
-
-    account.setUnidentifiedAccessKey(attributes.getUnidentifiedAccessKey());
-    account.setUnrestrictedUnidentifiedAccess(attributes.isUnrestrictedUnidentifiedAccess());
-    account.setDiscoverableByPhoneNumber(attributes.isDiscoverableByPhoneNumber());
-
-    accounts.update(account);
-
-    if (hasDiscoverabilityChange) {
-      directoryQueue.refreshRegisteredUser(account);
-    }
+      a.setRegistrationLockFromAttributes(attributes);
+      a.setUnidentifiedAccessKey(attributes.getUnidentifiedAccessKey());
+      a.setUnrestrictedUnidentifiedAccess(attributes.isUnrestrictedUnidentifiedAccess());
+      a.setDiscoverableByPhoneNumber(attributes.isDiscoverableByPhoneNumber());
+    });
   }
 
   @GET
   @Path("/me")
   @Produces(MediaType.APPLICATION_JSON)
-  public AccountCreationResult getMe(@Auth Account account) {
-    return whoAmI(account);
+  public AccountIdentityResponse getMe(@Auth AuthenticatedAccount auth) {
+    return whoAmI(auth);
   }
 
   @GET
   @Path("/whoami")
   @Produces(MediaType.APPLICATION_JSON)
-  public AccountCreationResult whoAmI(@Auth Account account) {
-    return new AccountCreationResult(account.getUuid(), account.isStorageSupported());
+  public AccountIdentityResponse whoAmI(@Auth AuthenticatedAccount auth) {
+    return new AccountIdentityResponse(auth.getAccount().getUuid(),
+        auth.getAccount().getNumber(),
+        auth.getAccount().getPhoneNumberIdentifier(),
+        auth.getAccount().getUsername().orElse(null),
+        auth.getAccount().isStorageSupported());
   }
 
   @DELETE
   @Path("/username")
   @Produces(MediaType.APPLICATION_JSON)
-  public void deleteUsername(@Auth Account account) {
-    usernames.delete(account.getUuid());
+  public void deleteUsername(@Auth AuthenticatedAccount auth) {
+    accounts.clearUsername(auth.getAccount());
   }
 
   @PUT
   @Path("/username/{username}")
   @Produces(MediaType.APPLICATION_JSON)
-  public Response setUsername(@Auth Account account, @PathParam("username") String username) throws RateLimitExceededException {
-    rateLimiters.getUsernameSetLimiter().validate(account.getUuid().toString());
+  public Response setUsername(@Auth AuthenticatedAccount auth, @PathParam("username") @Username String username)
+      throws RateLimitExceededException {
+    rateLimiters.getUsernameSetLimiter().validate(auth.getAccount().getUuid());
 
-    if (username == null || username.isEmpty()) {
-      return Response.status(Response.Status.BAD_REQUEST).build();
-    }
-
-    username = username.toLowerCase();
-
-    if (!username.matches("^[a-z_][a-z0-9_]+$")) {
-      return Response.status(Response.Status.BAD_REQUEST).build();
-    }
-
-    if (!usernames.put(account.getUuid(), username)) {
+    try {
+      accounts.setUsername(auth.getAccount(), username);
+    } catch (final UsernameNotAvailableException e) {
       return Response.status(Response.Status.CONFLICT).build();
     }
 
     return Response.ok().build();
   }
 
-  private CaptchaRequirement requiresCaptcha(String number, String transport, String forwardedFor,
-                                             String requester,
-                                             Optional<String>                 captchaToken,
-                                             Optional<StoredVerificationCode> storedVerificationCode,
-                                             Optional<String>                 pushChallenge)
-  {
+  @HEAD
+  @Path("/account/{uuid}")
+  public Response accountExists(
+      @HeaderParam("X-Forwarded-For") final String forwardedFor,
+      @PathParam("uuid") final UUID uuid,
+      @Context HttpServletRequest request) throws RateLimitExceededException {
 
+    // Disallow clients from making authenticated requests to this endpoint
+    if (StringUtils.isNotBlank(request.getHeader("Authorization"))) {
+      throw new BadRequestException();
+    }
+
+    final String mostRecentProxy = ForwardedIpUtil.getMostRecentProxy(forwardedFor)
+        .orElseThrow(() -> {
+          // Missing/malformed Forwarded-For, so we cannot check for a rate-limit.
+          // This shouldn't happen, so conservatively assume we're over the rate-limit
+          // and indicate that the client should retry
+          logger.error("Missing/bad Forwarded-For, cannot check account {}", uuid.toString());
+          return new RateLimitExceededException(Duration.ofHours(1));
+        });
+
+    rateLimiters.getCheckAccountExistenceLimiter().validate(mostRecentProxy);
+
+    final Status status = accounts.getByAccountIdentifier(uuid)
+        .or(() -> accounts.getByPhoneNumberIdentifier(uuid))
+        .isPresent() ? Status.OK : Status.NOT_FOUND;
+
+    return Response.status(status).build();
+  }
+
+  private void verifyRegistrationLock(final Account existingAccount, @Nullable final String clientRegistrationLock)
+      throws RateLimitExceededException, WebApplicationException {
+
+    final StoredRegistrationLock existingRegistrationLock = existingAccount.getRegistrationLock();
+    final ExternalServiceCredentials existingBackupCredentials =
+        backupServiceCredentialGenerator.generateFor(existingAccount.getUuid().toString());
+
+    if (existingRegistrationLock.requiresClientRegistrationLock()) {
+      if (!Util.isEmpty(clientRegistrationLock)) {
+        rateLimiters.getPinLimiter().validate(existingAccount.getNumber());
+      }
+
+      if (!existingRegistrationLock.verify(clientRegistrationLock)) {
+        throw new WebApplicationException(Response.status(423)
+            .entity(new RegistrationLockFailure(existingRegistrationLock.getTimeRemaining(),
+                existingRegistrationLock.needsFailureCredentials() ? existingBackupCredentials : null))
+            .build());
+      }
+
+      rateLimiters.getPinLimiter().clear(existingAccount.getNumber());
+    }
+  }
+
+  private CaptchaRequirement requiresCaptcha(String number, String transport, String forwardedFor,
+      String sourceHost,
+      Optional<String> captchaToken,
+      Optional<StoredVerificationCode> storedVerificationCode,
+      Optional<String> pushChallenge,
+      String userAgent)
+  {
+    if (testDevices.containsKey(number)) {
+      return new CaptchaRequirement(false, false);
+    }
+
+    final String countryCode = Util.getCountryCode(number);
     if (captchaToken.isPresent()) {
-      boolean validToken = recaptchaClient.verify(captchaToken.get(), requester);
+      boolean validToken = recaptchaClient.verify(captchaToken.get(), sourceHost);
+
+      {
+        final List<Tag> tags = new ArrayList<>();
+        tags.add(Tag.of("success", String.valueOf(validToken)));
+        tags.add(UserAgentTagUtil.getPlatformTag(userAgent));
+        tags.add(Tag.of(COUNTRY_CODE_TAG_NAME, countryCode));
+        Metrics.counter(CAPTCHA_ATTEMPT_COUNTER_NAME, tags).increment();
+      }
 
       if (validToken) {
-        captchaSuccessMeter.mark();
         return new CaptchaRequirement(false, false);
       } else {
-        captchaFailureMeter.mark();
         return new CaptchaRequirement(true, false);
       }
     }
 
-    final String countryCode = Util.getCountryCode(number);
     {
       final List<Tag> tags = new ArrayList<>();
       tags.add(Tag.of(COUNTRY_CODE_TAG_NAME, countryCode));
@@ -686,28 +785,25 @@ public class AccountController {
       }
     }
 
-    List<AbusiveHostRule> abuseRules = abusiveHostRules.getAbusiveHostRulesFor(requester);
+    DynamicCaptchaConfiguration captchaConfig = dynamicConfigurationManager.getConfiguration()
+        .getCaptchaConfiguration();
+    boolean countryFiltered = captchaConfig.getSignupCountryCodes().contains(countryCode);
 
-    for (AbusiveHostRule abuseRule : abuseRules) {
-      if (abuseRule.isBlocked()) {
-        logger.info("Blocked host: " + transport + ", " + number + ", " + requester + " (" + forwardedFor + ")");
-        blockedHostMeter.mark();
-        return new CaptchaRequirement(true, false);
+    if (abusiveHostRules.isBlocked(sourceHost)) {
+      blockedHostMeter.mark();
+      logger.info("Blocked host: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
+      if (countryFiltered) {
+        // this host was caught in the abusiveHostRules filter, but
+        // would be caught by country filter as well
+        countryFilterApplicable.mark();
       }
-
-      if (!abuseRule.getRegions().isEmpty()) {
-        if (abuseRule.getRegions().stream().noneMatch(number::startsWith)) {
-          logger.info("Restricted host: " + transport + ", " + number + ", " + requester + " (" + forwardedFor + ")");
-          filteredHostMeter.mark();
-          return new CaptchaRequirement(true, false);
-        }
-      }
+      return new CaptchaRequirement(true, false);
     }
 
     try {
-      rateLimiters.getSmsVoiceIpLimiter().validate(requester);
+      rateLimiters.getSmsVoiceIpLimiter().validate(sourceHost);
     } catch (RateLimitExceededException e) {
-      logger.info("Rate limited exceeded: " + transport + ", " + number + ", " + requester + " (" + forwardedFor + ")");
+      logger.info("Rate limit exceeded: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
       rateLimitedHostMeter.mark();
       return new CaptchaRequirement(true, true);
     }
@@ -715,13 +811,13 @@ public class AccountController {
     try {
       rateLimiters.getSmsVoicePrefixLimiter().validate(Util.getNumberPrefix(number));
     } catch (RateLimitExceededException e) {
-      logger.info("Prefix rate limit exceeded: " + transport + ", " + number + ", (" + forwardedFor + ")");
+      logger.info("Prefix rate limit exceeded: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
       rateLimitedPrefixMeter.mark();
       return new CaptchaRequirement(true, true);
     }
 
-    DynamicSignupCaptchaConfiguration signupCaptchaConfig = dynamicConfigurationManager.getConfiguration().getSignupCaptchaConfiguration();
-    if (signupCaptchaConfig.getCountryCodes().contains(countryCode)) {
+    if (countryFiltered) {
+      countryFilteredHostMeter.mark();
       return new CaptchaRequirement(true, false);
     }
 
@@ -731,64 +827,18 @@ public class AccountController {
   @Timed
   @DELETE
   @Path("/me")
-  public void deleteAccount(@Auth Account account) {
-    accounts.delete(account, AccountsManager.DeletionReason.USER_REQUEST);
+  public void deleteAccount(@Auth AuthenticatedAccount auth) throws InterruptedException {
+    accounts.delete(auth.getAccount(), AccountsManager.DeletionReason.USER_REQUEST);
   }
 
-  private boolean shouldAutoBlock(String requester) {
+  private boolean shouldAutoBlock(String sourceHost) {
     try {
-      rateLimiters.getAutoBlockLimiter().validate(requester);
+      rateLimiters.getAutoBlockLimiter().validate(sourceHost);
     } catch (RateLimitExceededException e) {
       return true;
     }
 
     return false;
-  }
-
-  private Account createAccount(String number, String password, String signalAgent, AccountAttributes accountAttributes) {
-    Optional<Account> maybeExistingAccount = accounts.get(number);
-
-    Device device = new Device();
-    device.setId(Device.MASTER_ID);
-    device.setAuthenticationCredentials(new AuthenticationCredentials(password));
-    device.setFetchesMessages(accountAttributes.getFetchesMessages());
-    device.setRegistrationId(accountAttributes.getRegistrationId());
-    device.setName(accountAttributes.getName());
-    device.setCapabilities(accountAttributes.getCapabilities());
-    device.setCreated(System.currentTimeMillis());
-    device.setLastSeen(Util.todayInMillis());
-    device.setUserAgent(signalAgent);
-
-    Account account = new Account();
-    account.setNumber(number);
-    account.setUuid(UUID.randomUUID());
-    account.addDevice(device);
-    setAccountRegistrationLockFromAttributes(account, accountAttributes);
-    account.setUnidentifiedAccessKey(accountAttributes.getUnidentifiedAccessKey());
-    account.setUnrestrictedUnidentifiedAccess(accountAttributes.isUnrestrictedUnidentifiedAccess());
-    account.setDiscoverableByPhoneNumber(accountAttributes.isDiscoverableByPhoneNumber());
-
-    if (accounts.create(account)) {
-      newUserMeter.mark();
-    }
-
-    directoryQueue.refreshRegisteredUser(account);
-    maybeExistingAccount.ifPresent(definitelyExistingAccount -> messagesManager.clear(definitelyExistingAccount.getUuid()));
-    pendingAccounts.remove(number);
-
-    return account;
-  }
-
-  private void setAccountRegistrationLockFromAttributes(Account account, @Valid AccountAttributes attributes) {
-    if (!Util.isEmpty(attributes.getPin())) {
-      account.setPin(attributes.getPin());
-    } else if (!Util.isEmpty(attributes.getRegistrationLock())) {
-      AuthenticationCredentials credentials = new AuthenticationCredentials(attributes.getRegistrationLock());
-      account.setRegistrationLock(credentials.getHashedAuthenticationToken(), credentials.getSalt());
-    } else {
-      account.setPin(null);
-      account.setRegistrationLock(null, null);
-    }
   }
 
   @VisibleForTesting protected

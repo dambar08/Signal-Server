@@ -5,6 +5,13 @@
 
 package org.whispersystems.textsecuregcm.redis;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.lettuce.core.RedisCommandTimeoutException;
 import io.lettuce.core.RedisException;
@@ -14,26 +21,20 @@ import io.lettuce.core.cluster.api.sync.RedisAdvancedClusterCommands;
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection;
 import io.lettuce.core.event.EventBus;
 import io.lettuce.core.resource.ClientResources;
-import org.junit.Before;
-import org.junit.Test;
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RetryConfiguration;
 import reactor.core.publisher.Flux;
 
-import java.time.Duration;
-
-import static org.junit.Assert.*;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
-public class FaultTolerantRedisClusterTest {
+class FaultTolerantRedisClusterTest {
 
     private RedisAdvancedClusterCommands<String, String> clusterCommands;
     private FaultTolerantRedisCluster                    faultTolerantCluster;
 
     @SuppressWarnings("unchecked")
-    @Before
+    @BeforeEach
     public void setUp() {
         final RedisClusterClient                                   clusterClient     = mock(RedisClusterClient.class);
         final StatefulRedisClusterConnection<String, String>       clusterConnection = mock(StatefulRedisClusterConnection.class);
@@ -63,22 +64,24 @@ public class FaultTolerantRedisClusterTest {
     }
 
     @Test
-    public void testBreaker() {
+    void testBreaker() {
         when(clusterCommands.get(anyString()))
                 .thenReturn("value")
-                .thenThrow(new RedisException("Badness has ensued."));
+                .thenThrow(new RuntimeException("Badness has ensued."));
 
         assertEquals("value", faultTolerantCluster.withCluster(connection -> connection.sync().get("key")));
 
         assertThrows(RedisException.class,
                 () -> faultTolerantCluster.withCluster(connection -> connection.sync().get("OH NO")));
 
-        assertThrows(CallNotPermittedException.class,
+        final RedisException redisException = assertThrows(RedisException.class,
                 () -> faultTolerantCluster.withCluster(connection -> connection.sync().get("OH NO")));
+
+        assertTrue(redisException.getCause() instanceof CallNotPermittedException);
     }
 
     @Test
-    public void testRetry() {
+    void testRetry() {
         when(clusterCommands.get(anyString()))
                 .thenThrow(new RedisCommandTimeoutException())
                 .thenThrow(new RedisCommandTimeoutException())

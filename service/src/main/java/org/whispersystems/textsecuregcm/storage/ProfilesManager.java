@@ -8,14 +8,13 @@ package org.whispersystems.textsecuregcm.storage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisException;
+import java.io.IOException;
+import java.util.Optional;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
-
-import java.io.IOException;
-import java.util.Optional;
-import java.util.UUID;
 
 public class ProfilesManager {
 
@@ -23,14 +22,15 @@ public class ProfilesManager {
 
   private static final String CACHE_PREFIX = "profiles::";
 
-  private final Profiles                  profiles;
+  private final Profiles profiles;
   private final FaultTolerantRedisCluster cacheCluster;
-  private final ObjectMapper              mapper;
+  private final ObjectMapper mapper;
 
-  public ProfilesManager(Profiles profiles, FaultTolerantRedisCluster cacheCluster) {
-    this.profiles               = profiles;
-    this.cacheCluster           = cacheCluster;
-    this.mapper                 = SystemMapper.getMapper();
+  public ProfilesManager(final Profiles profiles,
+      final FaultTolerantRedisCluster cacheCluster) {
+    this.profiles = profiles;
+    this.cacheCluster = cacheCluster;
+    this.mapper = SystemMapper.getMapper();
   }
 
   public void set(UUID uuid, VersionedProfile versionedProfile) {
@@ -46,7 +46,7 @@ public class ProfilesManager {
   public Optional<VersionedProfile> get(UUID uuid, String version) {
     Optional<VersionedProfile> profile = memcacheGet(uuid, version);
 
-    if (!profile.isPresent()) {
+    if (profile.isEmpty()) {
       profile = profiles.get(uuid, version);
       profile.ifPresent(versionedProfile -> memcacheSet(uuid, versionedProfile));
     }

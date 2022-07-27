@@ -1,122 +1,122 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.sqs;
 
-import junitparams.JUnitParamsRunner;
-import junitparams.Parameters;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.whispersystems.textsecuregcm.storage.Account;
-import software.amazon.awssdk.services.sqs.SqsClient;
-import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
-import software.amazon.awssdk.services.sqs.model.SendMessageBatchRequest;
-
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-@RunWith(JUnitParamsRunner.class)
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
+import org.whispersystems.textsecuregcm.storage.Account;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import software.amazon.awssdk.services.sqs.model.SendMessageResponse;
+
 public class DirectoryQueueTest {
 
-    @Test
-    @Parameters(method = "argumentsForTestRefreshRegisteredUser")
-    public void testRefreshRegisteredUser(final boolean accountEnabled, final boolean accountDiscoverableByPhoneNumber, final String expectedAction) {
-        final SqsClient sqs            = mock(SqsClient.class);
-        final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://test"), sqs);
+  private SqsAsyncClient sqsAsyncClient;
 
-        final Account account = mock(Account.class);
-        when(account.getNumber()).thenReturn("+18005556543");
-        when(account.getUuid()).thenReturn(UUID.randomUUID());
-        when(account.isEnabled()).thenReturn(accountEnabled);
-        when(account.isDiscoverableByPhoneNumber()).thenReturn(accountDiscoverableByPhoneNumber);
+  @BeforeEach
+  void setUp() {
+    sqsAsyncClient = mock(SqsAsyncClient.class);
 
-        directoryQueue.refreshRegisteredUser(account);
+    when(sqsAsyncClient.sendMessage(any(SendMessageRequest.class)))
+        .thenReturn(CompletableFuture.completedFuture(SendMessageResponse.builder().build()));
+  }
 
-        final ArgumentCaptor<SendMessageBatchRequest> requestCaptor = ArgumentCaptor.forClass(SendMessageBatchRequest.class);
-        verify(sqs).sendMessageBatch(requestCaptor.capture());
+  @ParameterizedTest
+  @MethodSource("argumentsForTestRefreshRegisteredUser")
+  void testRefreshRegisteredUser(final boolean shouldBeVisibleInDirectory, final String expectedAction) {
+    final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://test"), sqsAsyncClient);
 
-        assertEquals(1, requestCaptor.getValue().entries().size());
+    final Account account = mock(Account.class);
+    when(account.getNumber()).thenReturn("+18005556543");
+    when(account.getUuid()).thenReturn(UUID.randomUUID());
+    when(account.shouldBeVisibleInDirectory()).thenReturn(shouldBeVisibleInDirectory);
 
-        final Map<String, MessageAttributeValue> messageAttributes = requestCaptor.getValue().entries().get(0).messageAttributes();
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(expectedAction).build(), messageAttributes.get("action"));
+    directoryQueue.refreshAccount(account);
+
+    final ArgumentCaptor<SendMessageRequest> requestCaptor = ArgumentCaptor.forClass(SendMessageRequest.class);
+    verify(sqsAsyncClient).sendMessage(requestCaptor.capture());
+
+    assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(expectedAction).build(),
+        requestCaptor.getValue().messageAttributes().get("action"));
+  }
+
+  @SuppressWarnings("unused")
+  private static Stream<Arguments> argumentsForTestRefreshRegisteredUser() {
+    return Stream.of(
+        Arguments.of(true, "add"),
+        Arguments.of(false, "delete"));
+  }
+
+  @Test
+  void testSendMessageMultipleQueues() {
+    final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://first", "sqs://second"), sqsAsyncClient);
+
+    final Account account = mock(Account.class);
+    when(account.getNumber()).thenReturn("+18005556543");
+    when(account.getUuid()).thenReturn(UUID.randomUUID());
+    when(account.shouldBeVisibleInDirectory()).thenReturn(true);
+
+    directoryQueue.refreshAccount(account);
+
+    final ArgumentCaptor<SendMessageRequest> requestCaptor = ArgumentCaptor.forClass(SendMessageRequest.class);
+    verify(sqsAsyncClient, times(2)).sendMessage(requestCaptor.capture());
+
+    for (final SendMessageRequest sendMessageRequest : requestCaptor.getAllValues()) {
+      assertEquals(MessageAttributeValue.builder().dataType("String").stringValue("add").build(),
+          sendMessageRequest.messageAttributes().get("action"));
     }
+  }
 
-    @Test
-    public void testRefreshBatch() {
-        final SqsClient sqs = mock(SqsClient.class);
-        final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://test"), sqs);
+  @Test
+  void testStop() {
+    final CompletableFuture<SendMessageResponse> sendMessageFuture = new CompletableFuture<>();
+    when(sqsAsyncClient.sendMessage(any(SendMessageRequest.class))).thenReturn(sendMessageFuture);
 
-        final Account discoverableAccount = mock(Account.class);
-        when(discoverableAccount.getNumber()).thenReturn("+18005556543");
-        when(discoverableAccount.getUuid()).thenReturn(UUID.randomUUID());
-        when(discoverableAccount.isEnabled()).thenReturn(true);
-        when(discoverableAccount.isDiscoverableByPhoneNumber()).thenReturn(true);
+    final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://test"), sqsAsyncClient);
 
-        final Account undiscoverableAccount = mock(Account.class);
-        when(undiscoverableAccount.getNumber()).thenReturn("+18005550987");
-        when(undiscoverableAccount.getUuid()).thenReturn(UUID.randomUUID());
-        when(undiscoverableAccount.isEnabled()).thenReturn(true);
-        when(undiscoverableAccount.isDiscoverableByPhoneNumber()).thenReturn(false);
+    final Account account = mock(Account.class);
+    when(account.getNumber()).thenReturn("+18005556543");
+    when(account.getUuid()).thenReturn(UUID.randomUUID());
+    when(account.shouldBeVisibleInDirectory()).thenReturn(true);
 
-        directoryQueue.refreshRegisteredUsers(List.of(discoverableAccount, undiscoverableAccount));
+    directoryQueue.refreshAccount(account);
 
-        final ArgumentCaptor<SendMessageBatchRequest> requestCaptor = ArgumentCaptor.forClass(SendMessageBatchRequest.class);
-        verify(sqs).sendMessageBatch(requestCaptor.capture());
+    final CompletableFuture<Boolean> stopFuture = CompletableFuture.supplyAsync(() -> {
+      try {
+        directoryQueue.stop();
+        return true;
+      } catch (final Exception e) {
+        return false;
+      }
+    });
 
-        assertEquals(2, requestCaptor.getValue().entries().size());
+    assertThrows(TimeoutException.class, () -> stopFuture.get(1, TimeUnit.SECONDS),
+        "Directory queue should not finish shutting down until all outstanding requests are resolved");
 
-        final Map<String, MessageAttributeValue> discoverableAccountAttributes = requestCaptor.getValue().entries().get(0).messageAttributes();
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(discoverableAccount.getNumber()).build(), discoverableAccountAttributes.get("id"));
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(discoverableAccount.getUuid().toString()).build(), discoverableAccountAttributes.get("uuid"));
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue("add").build(), discoverableAccountAttributes.get("action"));
-
-        final Map<String, MessageAttributeValue> undiscoverableAccountAttributes = requestCaptor.getValue().entries().get(1).messageAttributes();
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(undiscoverableAccount.getNumber()).build(), undiscoverableAccountAttributes.get("id"));
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue(undiscoverableAccount.getUuid().toString()).build(), undiscoverableAccountAttributes.get("uuid"));
-        assertEquals(MessageAttributeValue.builder().dataType("String").stringValue("delete").build(), undiscoverableAccountAttributes.get("action"));
-    }
-
-    @Test
-    public void testSendMessageMultipleQueues() {
-        final SqsClient      sqs            = mock(SqsClient.class);
-        final DirectoryQueue directoryQueue = new DirectoryQueue(List.of("sqs://first", "sqs://second"), sqs);
-
-        final Account account = mock(Account.class);
-        when(account.getNumber()).thenReturn("+18005556543");
-        when(account.getUuid()).thenReturn(UUID.randomUUID());
-        when(account.isEnabled()).thenReturn(true);
-        when(account.isDiscoverableByPhoneNumber()).thenReturn(true);
-
-        directoryQueue.refreshRegisteredUser(account);
-
-        final ArgumentCaptor<SendMessageBatchRequest> requestCaptor = ArgumentCaptor.forClass(SendMessageBatchRequest.class);
-        verify(sqs, times(2)).sendMessageBatch(requestCaptor.capture());
-
-        for (final SendMessageBatchRequest sendMessageBatchRequest : requestCaptor.getAllValues()) {
-            assertEquals(1, requestCaptor.getValue().entries().size());
-
-            final Map<String, MessageAttributeValue> messageAttributes = sendMessageBatchRequest.entries().get(0).messageAttributes();
-            assertEquals(MessageAttributeValue.builder().dataType("String").stringValue("add").build(), messageAttributes.get("action"));
-        }
-    }
-
-    @SuppressWarnings("unused")
-    private Object argumentsForTestRefreshRegisteredUser() {
-        return new Object[] {
-                new Object[] { true,  true,  "add"    },
-                new Object[] { true,  false, "delete" },
-                new Object[] { false, true,  "delete" },
-                new Object[] { false, false, "delete" }
-        };
-    }
+    sendMessageFuture.complete(SendMessageResponse.builder().build());
+    assertTrue(stopFuture.join());
+  }
 }

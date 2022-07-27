@@ -4,9 +4,13 @@
  */
 package org.whispersystems.textsecuregcm.util;
 
+import com.google.i18n.phonenumbers.NumberParseException;
 import com.google.i18n.phonenumbers.PhoneNumberUtil;
+import com.google.i18n.phonenumbers.PhoneNumberUtil.PhoneNumberFormat;
+import com.google.i18n.phonenumbers.Phonenumber.PhoneNumber;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -23,10 +27,13 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.annotation.Nonnull;
 
 public class Util {
 
   private static final Pattern COUNTRY_CODE_PATTERN = Pattern.compile("^\\+([17]|2[07]|3[0123469]|4[013456789]|5[12345678]|6[0123456]|8[1246]|9[0123458]|\\d{3})");
+
+  private static final PhoneNumberUtil PHONE_NUMBER_UTIL = PhoneNumberUtil.getInstance();
 
   public static byte[] getContactToken(String number) {
     try {
@@ -40,8 +47,29 @@ public class Util {
     }
   }
 
-  public static boolean isValidNumber(String number) {
-    return number.matches("^\\+[0-9]+") && PhoneNumberUtil.getInstance().isPossibleNumber(number, null);
+  /**
+   * Checks that the given number is a valid, E164-normalized phone number.
+   *
+   * @param number the number to check
+   *
+   * @throws ImpossiblePhoneNumberException if the given number is not a valid phone number at all
+   * @throws NonNormalizedPhoneNumberException if the given number is a valid phone number, but isn't E164-normalized
+   */
+  public static void requireNormalizedNumber(final String number) throws ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+    if (!PHONE_NUMBER_UTIL.isPossibleNumber(number, null)) {
+      throw new ImpossiblePhoneNumberException();
+    }
+
+    try {
+      final PhoneNumber phoneNumber = PHONE_NUMBER_UTIL.parse(number, null);
+      final String normalizedNumber = PHONE_NUMBER_UTIL.format(phoneNumber, PhoneNumberFormat.E164);
+
+      if (!number.equals(normalizedNumber)) {
+        throw new NonNormalizedPhoneNumberException(number, normalizedNumber);
+      }
+    } catch (final NumberParseException e) {
+      throw new ImpossiblePhoneNumberException(e);
+    }
   }
 
   public static String getCountryCode(String number) {
@@ -81,23 +109,12 @@ public class Util {
     return param == null || param.length() == 0;
   }
 
-  public static byte[] combine(byte[] one, byte[] two, byte[] three, byte[] four) {
-    byte[] combined = new byte[one.length + two.length + three.length + four.length];
-    System.arraycopy(one, 0, combined, 0, one.length);
-    System.arraycopy(two, 0, combined, one.length, two.length);
-    System.arraycopy(three, 0, combined, one.length + two.length, three.length);
-    System.arraycopy(four, 0, combined, one.length + two.length + three.length, four.length);
-
-    return combined;
-  }
-
   public static byte[] truncate(byte[] element, int length) {
     byte[] result = new byte[length];
     System.arraycopy(element, 0, result, 0, result.length);
 
     return result;
   }
-
 
   public static byte[][] split(byte[] input, int firstLength, int secondLength) {
     byte[][] parts = new byte[2][];
@@ -135,15 +152,33 @@ public class Util {
     return data;
   }
 
-  public static int toIntExact(long value) {
-    if ((int)value != value) {
-      throw new ArithmeticException("integer overflow");
-    }
-    return (int)value;
+  public static byte[] longToByteArray(long value) {
+    final ByteBuffer longBuffer = ByteBuffer.allocate(Long.BYTES);
+
+    longBuffer.putLong(value);
+
+    return longBuffer.array();
   }
 
+  public static int toIntExact(long value) {
+    if ((int) value != value) {
+      throw new ArithmeticException("integer overflow");
+    }
+    return (int) value;
+  }
+
+  public static int currentDaysSinceEpoch(@Nonnull Clock clock) {
+    return toIntExact(clock.millis() / 1000 / 60/ 60 / 24);
+  }
+
+  /**
+   * Returns the current number of days since the epoch.
+   *
+   * @deprecated use {@link #currentDaysSinceEpoch(Clock)} instead
+   */
+  @Deprecated
   public static int currentDaysSinceEpoch() {
-    return Util.toIntExact(System.currentTimeMillis() / 1000 / 60 / 60 / 24);
+    return currentDaysSinceEpoch(Clock.systemUTC());
   }
 
   public static void sleep(long i) {

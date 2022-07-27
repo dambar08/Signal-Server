@@ -5,68 +5,42 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 
 public class OutgoingMessageEntity {
 
-  @JsonIgnore
-  private long id;
+  private final UUID guid;
+  private final int type;
+  private final long timestamp;
+  private final String source;
+  private final UUID sourceUuid;
+  private final int sourceDevice;
+  private final UUID destinationUuid;
+  private final byte[] content;
+  private final long serverTimestamp;
 
-  @JsonIgnore
-  private boolean cached;
-
-  @JsonProperty
-  private UUID guid;
-
-  @JsonProperty
-  private int type;
-
-  @JsonProperty
-  private String relay;
-
-  @JsonProperty
-  private long timestamp;
-
-  @JsonProperty
-  private String source;
-
-  @JsonProperty
-  private UUID sourceUuid;
-
-  @JsonProperty
-  private int sourceDevice;
-
-  @JsonProperty
-  private byte[] message;
-
-  @JsonProperty
-  private byte[] content;
-
-  @JsonProperty
-  private long serverTimestamp;
-
-  public OutgoingMessageEntity() {}
-
-  public OutgoingMessageEntity(long id, boolean cached,
-                               UUID guid, int type, String relay, long timestamp,
-                               String source, UUID sourceUuid, int sourceDevice,
-                               byte[] message, byte[] content, long serverTimestamp)
+  @JsonCreator
+  public OutgoingMessageEntity(@JsonProperty("guid") final UUID guid,
+      @JsonProperty("type") final int type,
+      @JsonProperty("timestamp") final long timestamp,
+      @JsonProperty("source") final String source,
+      @JsonProperty("sourceUuid") final UUID sourceUuid,
+      @JsonProperty("sourceDevice") final int sourceDevice,
+      @JsonProperty("destinationUuid") final UUID destinationUuid,
+      @JsonProperty("content") final byte[] content,
+      @JsonProperty("serverTimestamp") final long serverTimestamp)
   {
-    this.id              = id;
-    this.cached          = cached;
     this.guid            = guid;
     this.type            = type;
-    this.relay           = relay;
     this.timestamp       = timestamp;
     this.source          = source;
     this.sourceUuid      = sourceUuid;
     this.sourceDevice    = sourceDevice;
-    this.message         = message;
+    this.destinationUuid = destinationUuid;
     this.content         = content;
     this.serverTimestamp = serverTimestamp;
   }
@@ -77,10 +51,6 @@ public class OutgoingMessageEntity {
 
   public int getType() {
     return type;
-  }
-
-  public String getRelay() {
-    return relay;
   }
 
   public long getTimestamp() {
@@ -99,22 +69,12 @@ public class OutgoingMessageEntity {
     return sourceDevice;
   }
 
-  public byte[] getMessage() {
-    return message;
+  public UUID getDestinationUuid() {
+    return destinationUuid;
   }
 
   public byte[] getContent() {
     return content;
-  }
-
-  @JsonIgnore
-  public long getId() {
-    return id;
-  }
-
-  @JsonIgnore
-  public boolean isCached() {
-    return cached;
   }
 
   public long getServerTimestamp() {
@@ -126,24 +86,20 @@ public class OutgoingMessageEntity {
     if (this == o) return true;
     if (o == null || getClass() != o.getClass()) return false;
     final OutgoingMessageEntity that = (OutgoingMessageEntity)o;
-    return id == that.id &&
-            cached == that.cached &&
-            type == that.type &&
+    return type == that.type &&
             timestamp == that.timestamp &&
             sourceDevice == that.sourceDevice &&
             serverTimestamp == that.serverTimestamp &&
-            Objects.equals(guid, that.guid) &&
-            Objects.equals(relay, that.relay) &&
+            guid.equals(that.guid) &&
             Objects.equals(source, that.source) &&
             Objects.equals(sourceUuid, that.sourceUuid) &&
-            Arrays.equals(message, that.message) &&
+            destinationUuid.equals(that.destinationUuid) &&
             Arrays.equals(content, that.content);
   }
 
   @Override
   public int hashCode() {
-    int result = Objects.hash(id, cached, guid, type, relay, timestamp, source, sourceUuid, sourceDevice, serverTimestamp);
-    result = 31 * result + Arrays.hashCode(message);
+    int result = Objects.hash(guid, type, timestamp, source, sourceUuid, sourceDevice, destinationUuid, serverTimestamp);
     result = 31 * result + Arrays.hashCode(content);
     return result;
   }

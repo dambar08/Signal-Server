@@ -21,6 +21,19 @@
     </repository>
   </repositories>
 
+  <pluginRepositories>
+    <pluginRepository>
+      <id>ossrh-snapshots</id>
+      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+      <releases>
+        <enabled>false</enabled>
+      </releases>
+      <snapshots>
+        <enabled>true</enabled>
+      </snapshots>
+    </pluginRepository>
+  </pluginRepositories>
+
   <modules>
     <module>redis-dispatch</module>
     <module>websocket-resources</module>
@@ -29,30 +42,32 @@
   </modules>
 
   <properties>
-    <aws.sdk.version>1.11.939</aws.sdk.version>
-    <aws.sdk2.version>2.16.66</aws.sdk2.version>
+    <aws.sdk.version>1.12.154</aws.sdk.version>
+    <aws.sdk2.version>2.17.125</aws.sdk2.version>
     <commons-codec.version>1.15</commons-codec.version>
     <commons-csv.version>1.8</commons-csv.version>
     <commons-io.version>2.9.0</commons-io.version>
-    <dropwizard.version>2.0.22</dropwizard.version>
+    <dropwizard.version>2.0.28</dropwizard.version>
     <dropwizard-metrics-datadog.version>1.1.13</dropwizard-metrics-datadog.version>
+    <gson.version>2.9.0</gson.version>
     <guava.version>30.1.1-jre</guava.version>
+    <jackson.version>2.13.2.20220328</jackson.version>
     <jaxb.version>2.3.1</jaxb.version>
     <jedis.version>2.9.0</jedis.version>
-    <lettuce.version>6.0.4.RELEASE</lettuce.version>
-    <libphonenumber.version>8.12.23</libphonenumber.version>
-    <logstash.logback.version>6.6</logstash.logback.version>
+    <lettuce.version>6.1.9.RELEASE</lettuce.version>
+    <libphonenumber.version>8.12.50</libphonenumber.version>
+    <logstash.logback.version>7.0.1</logstash.logback.version>
     <micrometer.version>1.5.3</micrometer.version>
-    <mockito.version>3.11.1</mockito.version>
+    <mockito.version>4.3.1</mockito.version>
     <netty.version>4.1.65.Final</netty.version>
-    <netty.tcnative-boringssl-static.version>2.0.39.Final</netty.tcnative-boringssl-static.version>
     <opentest4j.version>1.2.0</opentest4j.version>
-    <postgresql.version>9.4-1201-jdbc41</postgresql.version>
-    <protobuf.version>3.17.1</protobuf.version>
-    <pushy.version>0.14.2</pushy.version>
+    <protobuf.version>3.19.4</protobuf.version>
+    <pushy.version>0.15.1</pushy.version>
     <resilience4j.version>1.5.0</resilience4j.version>
     <semver4j.version>3.1.0</semver4j.version>
     <slf4j.version>1.7.30</slf4j.version>
+    <stripe.version>20.79.0</stripe.version>
+    <vavr.version>0.10.4</vavr.version>
 
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
@@ -63,6 +78,13 @@
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.13.2.20220328</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>io.dropwizard</groupId>
         <artifactId>dropwizard-dependencies</artifactId>
@@ -88,6 +110,13 @@
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>bom</artifactId>
         <version>${aws.sdk2.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.google.cloud</groupId>
+        <artifactId>libraries-bom</artifactId>
+        <version>20.9.0</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -152,10 +181,9 @@
         <version>${lettuce.version}</version>
       </dependency>
       <dependency>
-        <groupId>io.netty</groupId>
-        <artifactId>netty-tcnative-boringssl-static</artifactId>
-        <version>${netty.tcnative-boringssl-static.version}</version>
-        <scope>runtime</scope>
+        <groupId>io.vavr</groupId>
+        <artifactId>vavr</artifactId>
+        <version>${vavr.version}</version>
       </dependency>
       <dependency>
         <groupId>javax.xml.bind</groupId>
@@ -202,12 +230,6 @@
         <scope>test</scope>
       </dependency>
       <dependency>
-        <groupId>org.postgresql</groupId>
-        <artifactId>postgresql</artifactId>
-        <version>${postgresql.version}</version>
-        <scope>runtime</scope>
-      </dependency>
-      <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>
         <version>${slf4j.version}</version>
@@ -223,6 +245,45 @@
         <artifactId>jedis</artifactId>
         <version>${jedis.version}</version>
       </dependency>
+      <dependency>
+        <groupId>commons-logging</groupId>
+        <artifactId>commons-logging</artifactId>
+        <version>1.2</version>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm</artifactId>
+        <version>9.2</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.stripe</groupId>
+        <artifactId>stripe-java</artifactId>
+        <version>${stripe.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.code.gson</groupId>
+        <artifactId>gson</artifactId>
+        <version>${gson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.signal</groupId>
+        <artifactId>embedded-redis</artifactId>
+        <version>0.8.3</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.signal</groupId>
+        <artifactId>libsignal-server</artifactId>
+        <version>0.18.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-bom</artifactId>
+        <version>2.17.1</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -236,7 +297,7 @@
     <dependency>
       <groupId>com.github.tomakehurst</groupId>
       <artifactId>wiremock-jre8</artifactId>
-      <version>2.28.1</version>
+      <version>2.32.0</version>
       <scope>test</scope>
       <exclusions>
         <exclusion>
@@ -261,12 +322,35 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
       <scope>test</scope>
     </dependency>
 
   </dependencies>
+
+  <profiles>
+    <profile>
+      <id>include-abusive-message-filter</id>
+      <activation>
+        <file>
+          <exists>abusive-message-filter/pom.xml</exists>
+        </file>
+      </activation>
+      <modules>
+        <module>abusive-message-filter</module>
+      </modules>
+    </profile>
+
+    <profile>
+      <id>exclude-abusive-message-filter</id>
+      <activation>
+        <file>
+          <missing>abusive-message-filter/pom.xml</missing>
+        </file>
+      </activation>
+    </profile>
+  </profiles>
 
   <build>
     <extensions>
@@ -283,7 +367,8 @@
         <artifactId>protobuf-maven-plugin</artifactId>
         <version>0.6.1</version>
         <configuration>
-          <protocArtifact>com.google.protobuf:protoc:3.17.2:exe:${os.detected.classifier}</protocArtifact>
+          <protocArtifact>com.google.protobuf:protoc:3.18.0:exe:${os.detected.classifier}</protocArtifact>
+          <checkStaleness>true</checkStaleness>
         </configuration>
         <executions>
           <execution>
@@ -300,8 +385,7 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.8.1</version>
         <configuration>
-          <source>11</source>
-          <target>11</target>
+          <release>17</release>
         </configuration>
       </plugin>
 
@@ -365,7 +449,7 @@
               <rules>
                 <dependencyConvergence/>
                 <requireMavenVersion>
-                  <version>3.0.0</version>
+                  <version>3.8.3</version>
                 </requireMavenVersion>
               </rules>
             </configuration>

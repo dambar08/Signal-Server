@@ -5,73 +5,86 @@
 
 package org.whispersystems.textsecuregcm.tests.storage;
 
-import org.junit.Before;
-import org.junit.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.whispersystems.textsecuregcm.storage.Account;
+import org.whispersystems.textsecuregcm.storage.AccountCrawlChunk;
 import org.whispersystems.textsecuregcm.storage.AccountDatabaseCrawler;
 import org.whispersystems.textsecuregcm.storage.AccountDatabaseCrawlerCache;
 import org.whispersystems.textsecuregcm.storage.AccountDatabaseCrawlerListener;
 import org.whispersystems.textsecuregcm.storage.AccountDatabaseCrawlerRestartException;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Optional;
-import java.util.UUID;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
-
-public class AccountDatabaseCrawlerTest {
+class AccountDatabaseCrawlerTest {
 
   private static final UUID ACCOUNT1 = UUID.randomUUID();
   private static final UUID ACCOUNT2 = UUID.randomUUID();
 
-  private static final int  CHUNK_SIZE        = 1000;
+  private static final int CHUNK_SIZE = 1000;
   private static final long CHUNK_INTERVAL_MS = 30_000L;
 
   private final Account account1 = mock(Account.class);
   private final Account account2 = mock(Account.class);
 
-  private final AccountsManager                accounts = mock(AccountsManager.class);
+  private final AccountsManager accounts = mock(AccountsManager.class);
   private final AccountDatabaseCrawlerListener listener = mock(AccountDatabaseCrawlerListener.class);
-  private final AccountDatabaseCrawlerCache    cache    = mock(AccountDatabaseCrawlerCache.class);
+  private final AccountDatabaseCrawlerCache cache = mock(AccountDatabaseCrawlerCache.class);
 
-  private final AccountDatabaseCrawler        crawler   = new AccountDatabaseCrawler(accounts, cache, Arrays.asList(listener), CHUNK_SIZE, CHUNK_INTERVAL_MS);
+  private final AccountDatabaseCrawler crawler =
+      new AccountDatabaseCrawler("test", accounts, cache, List.of(listener), CHUNK_SIZE, CHUNK_INTERVAL_MS);
 
-  @Before
-  public void setup() {
+  @BeforeEach
+  void setup() {
     when(account1.getUuid()).thenReturn(ACCOUNT1);
     when(account2.getUuid()).thenReturn(ACCOUNT2);
 
-    when(accounts.getAllFrom(anyInt())).thenReturn(Arrays.asList(account1, account2));
-    when(accounts.getAllFrom(eq(ACCOUNT1), anyInt())).thenReturn(Arrays.asList(account2));
-    when(accounts.getAllFrom(eq(ACCOUNT2), anyInt())).thenReturn(Collections.emptyList());
+    when(accounts.getAllFromDynamo(anyInt())).thenReturn(
+        new AccountCrawlChunk(List.of(account1, account2), ACCOUNT2));
+    when(accounts.getAllFromDynamo(eq(ACCOUNT1), anyInt())).thenReturn(
+        new AccountCrawlChunk(List.of(account2), ACCOUNT2));
+    when(accounts.getAllFromDynamo(eq(ACCOUNT2), anyInt())).thenReturn(
+        new AccountCrawlChunk(Collections.emptyList(), null));
 
     when(cache.claimActiveWork(any(), anyLong())).thenReturn(true);
     when(cache.isAccelerated()).thenReturn(false);
+
   }
 
   @Test
-  public void testCrawlStart() throws AccountDatabaseCrawlerRestartException {
+  void testCrawlStart() throws AccountDatabaseCrawlerRestartException {
     when(cache.getLastUuid()).thenReturn(Optional.empty());
+    when(cache.getLastUuidDynamo()).thenReturn(Optional.empty());
 
     boolean accelerated = crawler.doPeriodicWork();
     assertThat(accelerated).isFalse();
 
     verify(cache, times(1)).claimActiveWork(any(String.class), anyLong());
-    verify(cache, times(1)).getLastUuid();
+    verify(cache, times(0)).getLastUuid();
+    verify(cache, times(1)).getLastUuidDynamo();
     verify(listener, times(1)).onCrawlStart();
-    verify(accounts, times(1)).getAllFrom(eq(CHUNK_SIZE));
-    verify(accounts, times(0)).getAllFrom(any(UUID.class), eq(CHUNK_SIZE));
+    verify(accounts, times(1)).getAllFromDynamo(eq(CHUNK_SIZE));
+    verify(accounts, times(0)).getAllFromDynamo(any(UUID.class), eq(CHUNK_SIZE));
     verify(account1, times(0)).getUuid();
-    verify(account2, times(1)).getUuid();
-    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.empty()), eq(Arrays.asList(account1, account2)));
-    verify(cache, times(1)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.empty()), eq(List.of(account1, account2)));
+    verify(cache, times(0)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(cache, times(1)).setLastUuidDynamo(eq(Optional.of(ACCOUNT2)));
     verify(cache, times(1)).isAccelerated();
     verify(cache, times(1)).releaseActiveWork(any(String.class));
 
@@ -83,23 +96,25 @@ public class AccountDatabaseCrawlerTest {
   }
 
   @Test
-  public void testCrawlChunk() throws AccountDatabaseCrawlerRestartException {
+  void testCrawlChunk() throws AccountDatabaseCrawlerRestartException {
     when(cache.getLastUuid()).thenReturn(Optional.of(ACCOUNT1));
+    when(cache.getLastUuidDynamo()).thenReturn(Optional.of(ACCOUNT1));
 
     boolean accelerated = crawler.doPeriodicWork();
     assertThat(accelerated).isFalse();
 
     verify(cache, times(1)).claimActiveWork(any(String.class), anyLong());
-    verify(cache, times(1)).getLastUuid();
-    verify(accounts, times(0)).getAllFrom(eq(CHUNK_SIZE));
-    verify(accounts, times(1)).getAllFrom(eq(ACCOUNT1), eq(CHUNK_SIZE));
-    verify(account2, times(1)).getUuid();
-    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(Arrays.asList(account2)));
-    verify(cache, times(1)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(cache, times(0)).getLastUuid();
+    verify(cache, times(1)).getLastUuidDynamo();
+    verify(accounts, times(0)).getAllFromDynamo(eq(CHUNK_SIZE));
+    verify(accounts, times(1)).getAllFromDynamo(eq(ACCOUNT1), eq(CHUNK_SIZE));
+    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(List.of(account2)));
+    verify(cache, times(0)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(cache, times(1)).setLastUuidDynamo(eq(Optional.of(ACCOUNT2)));
     verify(cache, times(1)).isAccelerated();
     verify(cache, times(1)).releaseActiveWork(any(String.class));
 
-    verifyZeroInteractions(account1);
+    verifyNoInteractions(account1);
 
     verifyNoMoreInteractions(account2);
     verifyNoMoreInteractions(accounts);
@@ -108,24 +123,26 @@ public class AccountDatabaseCrawlerTest {
   }
 
   @Test
-  public void testCrawlChunkAccelerated() throws AccountDatabaseCrawlerRestartException {
+  void testCrawlChunkAccelerated() throws AccountDatabaseCrawlerRestartException {
     when(cache.isAccelerated()).thenReturn(true);
     when(cache.getLastUuid()).thenReturn(Optional.of(ACCOUNT1));
+    when(cache.getLastUuidDynamo()).thenReturn(Optional.of(ACCOUNT1));
 
     boolean accelerated = crawler.doPeriodicWork();
     assertThat(accelerated).isTrue();
 
     verify(cache, times(1)).claimActiveWork(any(String.class), anyLong());
-    verify(cache, times(1)).getLastUuid();
-    verify(accounts, times(0)).getAllFrom(eq(CHUNK_SIZE));
-    verify(accounts, times(1)).getAllFrom(eq(ACCOUNT1), eq(CHUNK_SIZE));
-    verify(account2, times(1)).getUuid();
-    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(Arrays.asList(account2)));
-    verify(cache, times(1)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(cache, times(0)).getLastUuid();
+    verify(cache, times(1)).getLastUuidDynamo();
+    verify(accounts, times(0)).getAllFromDynamo(eq(CHUNK_SIZE));
+    verify(accounts, times(1)).getAllFromDynamo(eq(ACCOUNT1), eq(CHUNK_SIZE));
+    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(List.of(account2)));
+    verify(cache, times(0)).setLastUuid(eq(Optional.of(ACCOUNT2)));
+    verify(cache, times(1)).setLastUuidDynamo(eq(Optional.of(ACCOUNT2)));
     verify(cache, times(1)).isAccelerated();
     verify(cache, times(1)).releaseActiveWork(any(String.class));
 
-    verifyZeroInteractions(account1);
+    verifyNoInteractions(account1);
 
     verifyNoMoreInteractions(account2);
     verifyNoMoreInteractions(accounts);
@@ -134,25 +151,29 @@ public class AccountDatabaseCrawlerTest {
   }
 
   @Test
-  public void testCrawlChunkRestart() throws AccountDatabaseCrawlerRestartException {
+  void testCrawlChunkRestart() throws AccountDatabaseCrawlerRestartException {
     when(cache.getLastUuid()).thenReturn(Optional.of(ACCOUNT1));
-    doThrow(AccountDatabaseCrawlerRestartException.class).when(listener).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(Arrays.asList(account2)));
+    when(cache.getLastUuidDynamo()).thenReturn(Optional.of(ACCOUNT1));
+    doThrow(AccountDatabaseCrawlerRestartException.class).when(listener)
+        .timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(List.of(account2)));
 
     boolean accelerated = crawler.doPeriodicWork();
     assertThat(accelerated).isFalse();
 
     verify(cache, times(1)).claimActiveWork(any(String.class), anyLong());
-    verify(cache, times(1)).getLastUuid();
-    verify(accounts, times(0)).getAllFrom(eq(CHUNK_SIZE));
-    verify(accounts, times(1)).getAllFrom(eq(ACCOUNT1), eq(CHUNK_SIZE));
+    verify(cache, times(0)).getLastUuid();
+    verify(cache, times(1)).getLastUuidDynamo();
+    verify(accounts, times(0)).getAllFromDynamo(eq(CHUNK_SIZE));
+    verify(accounts, times(1)).getAllFromDynamo(eq(ACCOUNT1), eq(CHUNK_SIZE));
     verify(account2, times(0)).getNumber();
-    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(Arrays.asList(account2)));
-    verify(cache, times(1)).setLastUuid(eq(Optional.empty()));
+    verify(listener, times(1)).timeAndProcessCrawlChunk(eq(Optional.of(ACCOUNT1)), eq(List.of(account2)));
+    verify(cache, times(0)).setLastUuid(eq(Optional.empty()));
+    verify(cache, times(1)).setLastUuidDynamo(eq(Optional.empty()));
     verify(cache, times(1)).setAccelerated(false);
     verify(cache, times(1)).isAccelerated();
     verify(cache, times(1)).releaseActiveWork(any(String.class));
 
-    verifyZeroInteractions(account1);
+    verifyNoInteractions(account1);
 
     verifyNoMoreInteractions(account2);
     verifyNoMoreInteractions(accounts);
@@ -161,26 +182,29 @@ public class AccountDatabaseCrawlerTest {
   }
 
   @Test
-  public void testCrawlEnd() {
+  void testCrawlEnd() {
     when(cache.getLastUuid()).thenReturn(Optional.of(ACCOUNT2));
+    when(cache.getLastUuidDynamo()).thenReturn(Optional.of(ACCOUNT2));
 
     boolean accelerated = crawler.doPeriodicWork();
     assertThat(accelerated).isFalse();
 
     verify(cache, times(1)).claimActiveWork(any(String.class), anyLong());
-    verify(cache, times(1)).getLastUuid();
-    verify(accounts, times(0)).getAllFrom(eq(CHUNK_SIZE));
-    verify(accounts, times(1)).getAllFrom(eq(ACCOUNT2), eq(CHUNK_SIZE));
+    verify(cache, times(0)).getLastUuid();
+    verify(cache, times(1)).getLastUuidDynamo();
+    verify(accounts, times(0)).getAllFromDynamo(eq(CHUNK_SIZE));
+    verify(accounts, times(1)).getAllFromDynamo(eq(ACCOUNT2), eq(CHUNK_SIZE));
     verify(account1, times(0)).getNumber();
     verify(account2, times(0)).getNumber();
     verify(listener, times(1)).onCrawlEnd(eq(Optional.of(ACCOUNT2)));
-    verify(cache, times(1)).setLastUuid(eq(Optional.empty()));
+    verify(cache, times(0)).setLastUuid(eq(Optional.empty()));
+    verify(cache, times(1)).setLastUuidDynamo(eq(Optional.empty()));
     verify(cache, times(1)).setAccelerated(false);
     verify(cache, times(1)).isAccelerated();
     verify(cache, times(1)).releaseActiveWork(any(String.class));
 
-    verifyZeroInteractions(account1);
-    verifyZeroInteractions(account2);
+    verifyNoInteractions(account1);
+    verifyNoInteractions(account2);
 
     verifyNoMoreInteractions(accounts);
     verifyNoMoreInteractions(listener);

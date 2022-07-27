@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2022 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
@@ -15,7 +15,10 @@ public class UserCapabilities {
         account.isGroupsV2Supported(),
         account.isGv1MigrationSupported(),
         account.isSenderKeySupported(),
-        account.isAnnouncementGroupSupported());
+        account.isAnnouncementGroupSupported(),
+        account.isChangeNumberSupported(),
+        account.isStoriesSupported(),
+        account.isGiftBadgesSupported());
   }
 
   @JsonProperty
@@ -30,13 +33,33 @@ public class UserCapabilities {
   @JsonProperty
   private boolean announcementGroup;
 
-  public UserCapabilities() {}
+  @JsonProperty
+  private boolean changeNumber;
 
-  public UserCapabilities(boolean gv2, boolean gv1Migration, final boolean senderKey, final boolean announcementGroup) {
-    this.gv2  = gv2;
+  @JsonProperty
+  private boolean stories;
+
+  @JsonProperty
+  private boolean giftBadges;
+
+  public UserCapabilities() {
+  }
+
+  public UserCapabilities(final boolean gv2,
+      boolean gv1Migration,
+      final boolean senderKey,
+      final boolean announcementGroup,
+      final boolean changeNumber,
+      final boolean stories,
+      final boolean giftBadges) {
+
+    this.gv2 = gv2;
     this.gv1Migration = gv1Migration;
     this.senderKey = senderKey;
     this.announcementGroup = announcementGroup;
+    this.changeNumber = changeNumber;
+    this.stories = stories;
+    this.giftBadges = giftBadges;
   }
 
   public boolean isGv2() {
@@ -53,5 +76,17 @@ public class UserCapabilities {
 
   public boolean isAnnouncementGroup() {
     return announcementGroup;
+  }
+
+  public boolean isChangeNumber() {
+    return changeNumber;
+  }
+
+  public boolean isStories() {
+    return stories;
+  }
+
+  public boolean isGiftBadges() {
+    return giftBadges;
   }
 }

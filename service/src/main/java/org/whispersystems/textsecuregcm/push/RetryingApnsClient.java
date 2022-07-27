@@ -19,6 +19,7 @@ import com.eatthepath.pushy.apns.util.SimpleApnsPushNotification;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.util.Constants;
@@ -37,6 +38,10 @@ public class RetryingApnsClient {
 
   private static final String APNS_CA_FILENAME = "apns-certificates.pem";
   private static final Logger logger = LoggerFactory.getLogger(RetryingApnsClient.class);
+
+  private static final String RESPONSE_COUNTER_NAME = name(RetryingApnsClient.class, "response");
+  private static final String ACCEPTED_TAG_NAME = "accepted";
+  private static final String REJECTION_REASON_TAG_NAME = "rejectionReason";
 
   private final ApnsClient apnsClient;
 
@@ -62,9 +67,9 @@ public class RetryingApnsClient {
     this.apnsClient = apnsClient;
   }
 
-  ListenableFuture<ApnResult> send(final String apnId, final String topic, final String payload, final Instant expiration, final boolean isVoip) {
+  ListenableFuture<ApnResult> send(final String apnId, final String topic, final String payload, final Instant expiration, final boolean isVoip, final String collapseId) {
     SettableFuture<ApnResult>  result       = SettableFuture.create();
-    SimpleApnsPushNotification notification = new SimpleApnsPushNotification(apnId, topic, payload, expiration, DeliveryPriority.IMMEDIATE, isVoip ? PushType.VOIP : PushType.ALERT);
+    SimpleApnsPushNotification notification = new SimpleApnsPushNotification(apnId, topic, payload, expiration, DeliveryPriority.IMMEDIATE, isVoip ? PushType.VOIP : PushType.ALERT, collapseId);
         
     apnsClient.sendNotification(notification).whenComplete(new ResponseHandler(result));
 
@@ -88,12 +93,21 @@ public class RetryingApnsClient {
       if (response != null) {
         if (response.isAccepted()) {
           future.set(new ApnResult(ApnResult.Status.SUCCESS, null));
-        } else if ("Unregistered".equals(response.getRejectionReason()) ||
-                "BadDeviceToken".equals(response.getRejectionReason())) {
-          future.set(new ApnResult(ApnResult.Status.NO_SUCH_USER, response.getRejectionReason()));
+
+          Metrics.counter(RESPONSE_COUNTER_NAME, ACCEPTED_TAG_NAME, "true").increment();
         } else {
-          logger.warn("Got APN failure: " + response.getRejectionReason());
-          future.set(new ApnResult(ApnResult.Status.GENERIC_FAILURE, response.getRejectionReason()));
+          final String rejectionReason = response.getRejectionReason().orElse(null);
+
+          Metrics.counter(RESPONSE_COUNTER_NAME,
+              ACCEPTED_TAG_NAME, "false",
+              REJECTION_REASON_TAG_NAME, rejectionReason).increment();
+
+          if ("Unregistered".equals(rejectionReason) || "BadDeviceToken".equals(rejectionReason)) {
+            future.set(new ApnResult(ApnResult.Status.NO_SUCH_USER, rejectionReason));
+          } else {
+            logger.warn("Got APN failure: {}", rejectionReason);
+            future.set(new ApnResult(ApnResult.Status.GENERIC_FAILURE, rejectionReason));
+          }
         }
       } else {
         logger.warn("Execution exception", cause);

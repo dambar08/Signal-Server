@@ -1,9 +1,11 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.storage;
+
+import static com.codahale.metrics.MetricRegistry.name;
 
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
@@ -12,19 +14,17 @@ import com.codahale.metrics.SharedMetricRegistries;
 import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
 import io.dropwizard.lifecycle.Managed;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.util.Constants;
-import org.whispersystems.textsecuregcm.util.Util;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-
-import static com.codahale.metrics.MetricRegistry.name;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
+import org.whispersystems.textsecuregcm.entities.MessageProtos;
+import org.whispersystems.textsecuregcm.util.Constants;
+import org.whispersystems.textsecuregcm.util.Util;
 
 public class MessagePersister implements Managed {
 
@@ -40,7 +40,6 @@ public class MessagePersister implements Managed {
     private final MetricRegistry metricRegistry             = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
     private final Timer          getQueuesTimer             = metricRegistry.timer(name(MessagePersister.class, "getQueues"));
     private final Timer          persistQueueTimer          = metricRegistry.timer(name(MessagePersister.class, "persistQueue"));
-    private final Meter          persistMessageMeter        = metricRegistry.meter(name(MessagePersister.class, "persistMessage"));
     private final Meter          persistQueueExceptionMeter = metricRegistry.meter(name(MessagePersister.class, "persistQueueException"));
     private final Histogram      queueCountHistogram        = metricRegistry.histogram(name(MessagePersister.class, "queueCount"));
     private final Histogram      queueSizeHistogram         = metricRegistry.histogram(name(MessagePersister.class, "queueSize"));
@@ -48,12 +47,14 @@ public class MessagePersister implements Managed {
     static final int QUEUE_BATCH_LIMIT   = 100;
     static final int MESSAGE_BATCH_LIMIT = 100;
 
+    private static final long EXCEPTION_PAUSE_MILLIS = Duration.ofSeconds(3).toMillis();
+
     private static final String DISABLE_PERSISTER_FEATURE_FLAG = "DISABLE_MESSAGE_PERSISTER";
     private static final int WORKER_THREAD_COUNT = 4;
 
     private static final Logger logger = LoggerFactory.getLogger(MessagePersister.class);
 
-    public MessagePersister(final MessagesCache messagesCache, final MessagesManager messagesManager, final AccountsManager accountsManager, final DynamicConfigurationManager dynamicConfigurationManager, final Duration persistDelay) {
+    public MessagePersister(final MessagesCache messagesCache, final MessagesManager messagesManager, final AccountsManager accountsManager, final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager, final Duration persistDelay) {
         this.messagesCache               = messagesCache;
         this.messagesManager             = messagesManager;
         this.accountsManager             = accountsManager;
@@ -74,6 +75,7 @@ public class MessagePersister implements Managed {
                             }
                         } catch (final Throwable t) {
                             logger.warn("Failed to persist queues", t);
+                            Util.sleep(EXCEPTION_PAUSE_MILLIS);
                         }
                     }
                 }
@@ -131,6 +133,8 @@ public class MessagePersister implements Managed {
                     logger.warn("Failed to persist queue {}::{}; will schedule for retry", accountUuid, deviceId, e);
 
                     messagesCache.addQueueToPersist(accountUuid, deviceId);
+
+                    Util.sleep(EXCEPTION_PAUSE_MILLIS);
                 }
             }
 
@@ -142,13 +146,9 @@ public class MessagePersister implements Managed {
 
     @VisibleForTesting
     void persistQueue(final UUID accountUuid, final long deviceId) {
-        final Optional<Account> maybeAccount = accountsManager.get(accountUuid);
+        final Optional<Account> maybeAccount = accountsManager.getByAccountIdentifier(accountUuid);
 
-        final String accountNumber;
-
-        if (maybeAccount.isPresent()) {
-            accountNumber = maybeAccount.get().getNumber();
-        } else {
+        if (maybeAccount.isEmpty()) {
             logger.error("No account record found for account {}", accountUuid);
             return;
         }
@@ -157,21 +157,21 @@ public class MessagePersister implements Managed {
             messagesCache.lockQueueForPersistence(accountUuid, deviceId);
 
             try {
-                int messageCount = 0;
-                List<MessageProtos.Envelope> messages;
+              int messageCount = 0;
+              List<MessageProtos.Envelope> messages;
 
-                do {
-                    messages = messagesCache.getMessagesToPersist(accountUuid, deviceId, MESSAGE_BATCH_LIMIT);
+              do {
+                messages = messagesCache.getMessagesToPersist(accountUuid, deviceId, MESSAGE_BATCH_LIMIT);
 
-                    messagesManager.persistMessages(accountUuid, deviceId, messages);
-                    messageCount += messages.size();
+                messagesManager.persistMessages(accountUuid, deviceId, messages);
+                messageCount += messages.size();
 
-                    persistMessageMeter.mark(messages.size());
-                } while (!messages.isEmpty());
 
-                queueSizeHistogram.update(messageCount);
+              } while (!messages.isEmpty());
+
+              queueSizeHistogram.update(messageCount);
             } finally {
-                messagesCache.unlockQueueForPersistence(accountUuid, deviceId);
+              messagesCache.unlockQueueForPersistence(accountUuid, deviceId);
             }
         }
     }

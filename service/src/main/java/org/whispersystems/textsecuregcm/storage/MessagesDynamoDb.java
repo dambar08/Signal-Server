@@ -19,7 +19,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
-import org.apache.commons.lang3.StringUtils;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.util.AttributeValues;
@@ -42,19 +41,18 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
   private static final String LOCAL_INDEX_MESSAGE_UUID_KEY_SORT = "U";
 
   private static final String KEY_TYPE = "T";
-  private static final String KEY_RELAY = "R";
   private static final String KEY_TIMESTAMP = "TS";
   private static final String KEY_SOURCE = "SN";
   private static final String KEY_SOURCE_UUID = "SU";
   private static final String KEY_SOURCE_DEVICE = "SD";
-  private static final String KEY_MESSAGE = "M";
+  private static final String KEY_DESTINATION_UUID = "DU";
   private static final String KEY_CONTENT = "C";
   private static final String KEY_TTL = "E";
 
   private final Timer storeTimer = timer(name(getClass(), "store"));
   private final Timer loadTimer = timer(name(getClass(), "load"));
-  private final Timer deleteBySourceAndTimestamp = timer(name(getClass(), "delete", "sourceAndTimestamp"));
   private final Timer deleteByGuid = timer(name(getClass(), "delete", "guid"));
+  private final Timer deleteByKey = timer(name(getClass(), "delete", "key"));
   private final Timer deleteByAccount = timer(name(getClass(), "delete", "account"));
   private final Timer deleteByDevice = timer(name(getClass(), "delete", "device"));
 
@@ -74,7 +72,7 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
 
   private void storeBatch(final List<MessageProtos.Envelope> messages, final UUID destinationAccountUuid, final long destinationDeviceId) {
     if (messages.size() > DYNAMO_DB_MAX_BATCH_SIZE) {
-      throw new IllegalArgumentException("Maximum batch size of " + DYNAMO_DB_MAX_BATCH_SIZE + " execeeded with " + messages.size() + " messages");
+      throw new IllegalArgumentException("Maximum batch size of " + DYNAMO_DB_MAX_BATCH_SIZE + " exceeded with " + messages.size() + " messages");
     }
 
     final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
@@ -88,9 +86,9 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
           .put(KEY_TYPE, AttributeValues.fromInt(message.getType().getNumber()))
           .put(KEY_TIMESTAMP, AttributeValues.fromLong(message.getTimestamp()))
           .put(KEY_TTL, AttributeValues.fromLong(getTtlForMessage(message)));
-      if (message.hasRelay() && message.getRelay().length() > 0) {
-        item.put(KEY_RELAY, AttributeValues.fromString(message.getRelay()));
-      }
+
+      item.put(KEY_DESTINATION_UUID, AttributeValues.fromUUID(UUID.fromString(message.getDestinationUuid())));
+
       if (message.hasSource()) {
         item.put(KEY_SOURCE, AttributeValues.fromString(message.getSource()));
       }
@@ -99,9 +97,6 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
       }
       if (message.hasSourceDevice()) {
         item.put(KEY_SOURCE_DEVICE, AttributeValues.fromInt(message.getSourceDevice()));
-      }
-      if (message.hasLegacyMessage()) {
-        item.put(KEY_MESSAGE, AttributeValues.fromByteArray(message.getLegacyMessage().toByteArray()));
       }
       if (message.hasContent()) {
         item.put(KEY_CONTENT, AttributeValues.fromByteArray(message.getContent().toByteArray()));
@@ -131,43 +126,20 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
           .limit(numberOfMessagesToFetch)
           .build();
       List<OutgoingMessageEntity> messageEntities = new ArrayList<>(numberOfMessagesToFetch);
-      for (Map<String, AttributeValue> message : db().query(queryRequest).items()) {
+      for (Map<String, AttributeValue> message : db().queryPaginator(queryRequest).items()) {
         messageEntities.add(convertItemToOutgoingMessageEntity(message));
+        if (messageEntities.size() == numberOfMessagesToFetch) {
+          // queryPaginator() uses limit() as the page size, not as an absolute limit
+          // …but a page might be smaller than limit, because a page is capped at 1 MB
+          break;
+        }
       }
       return messageEntities;
     });
   }
 
-  public Optional<OutgoingMessageEntity> deleteMessageByDestinationAndSourceAndTimestamp(final UUID destinationAccountUuid, final long destinationDeviceId, final String source, final long timestamp) {
-    return deleteBySourceAndTimestamp.record(() -> {
-      if (StringUtils.isEmpty(source)) {
-        throw new IllegalArgumentException("must specify a source");
-      }
-
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final QueryRequest queryRequest = QueryRequest.builder()
-          .tableName(tableName)
-          .projectionExpression(KEY_SORT)
-          .consistentRead(true)
-          .keyConditionExpression("#part = :part AND begins_with ( #sort , :sortprefix )")
-          .filterExpression("#source = :source AND #timestamp = :timestamp")
-          .expressionAttributeNames(Map.of(
-              "#part", KEY_PARTITION,
-              "#sort", KEY_SORT,
-              "#source", KEY_SOURCE,
-              "#timestamp", KEY_TIMESTAMP))
-          .expressionAttributeValues(Map.of(
-              ":part", partitionKey,
-              ":sortprefix", convertDestinationDeviceIdToSortKeyPrefix(destinationDeviceId),
-              ":source", AttributeValues.fromString(source),
-              ":timestamp", AttributeValues.fromLong(timestamp)))
-          .build();
-
-      return deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(partitionKey, queryRequest);
-    });
-  }
-
-  public Optional<OutgoingMessageEntity> deleteMessageByDestinationAndGuid(final UUID destinationAccountUuid, final long destinationDeviceId, final UUID messageUuid) {
+  public Optional<OutgoingMessageEntity> deleteMessageByDestinationAndGuid(final UUID destinationAccountUuid,
+      final UUID messageUuid) {
     return deleteByGuid.record(() -> {
       final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
       final QueryRequest queryRequest = QueryRequest.builder()
@@ -187,10 +159,28 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     });
   }
 
+  public Optional<OutgoingMessageEntity> deleteMessage(final UUID destinationAccountUuid,
+      final long destinationDeviceId, final UUID messageUuid, final long serverTimestamp) {
+    return deleteByKey.record(() -> {
+      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
+      final AttributeValue sortKey = convertSortKey(destinationDeviceId, serverTimestamp, messageUuid);
+      DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
+          .tableName(tableName)
+          .key(Map.of(KEY_PARTITION, partitionKey, KEY_SORT, sortKey))
+          .returnValues(ReturnValue.ALL_OLD);
+      final DeleteItemResponse deleteItemResponse = db().deleteItem(deleteItemRequest.build());
+      if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
+        return Optional.of(convertItemToOutgoingMessageEntity(deleteItemResponse.attributes()));
+      }
+
+      return Optional.empty();
+    });
+  }
+
   @Nonnull
   private Optional<OutgoingMessageEntity> deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(AttributeValue partitionKey, QueryRequest queryRequest) {
     Optional<OutgoingMessageEntity> result = Optional.empty();
-    for (Map<String, AttributeValue> item : db().query(queryRequest).items()) {
+    for (Map<String, AttributeValue> item : db().queryPaginator(queryRequest).items()) {
       final byte[] rangeKeyValue = item.get(KEY_SORT).b().asByteArray();
       DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
           .tableName(tableName)
@@ -244,18 +234,17 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     final SortKey sortKey = convertSortKey(message.get(KEY_SORT).b().asByteArray());
     final UUID messageUuid = convertLocalIndexMessageUuidSortKey(message.get(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT).b().asByteArray());
     final int type = AttributeValues.getInt(message, KEY_TYPE, 0);
-    final String relay = AttributeValues.getString(message, KEY_RELAY, null);
     final long timestamp = AttributeValues.getLong(message, KEY_TIMESTAMP, 0L);
     final String source = AttributeValues.getString(message, KEY_SOURCE, null);
     final UUID sourceUuid = AttributeValues.getUUID(message, KEY_SOURCE_UUID, null);
     final int sourceDevice = AttributeValues.getInt(message, KEY_SOURCE_DEVICE, 0);
-    final byte[] messageBytes = AttributeValues.getByteArray(message, KEY_MESSAGE, null);
+    final UUID destinationUuid = AttributeValues.getUUID(message, KEY_DESTINATION_UUID, null);
     final byte[] content = AttributeValues.getByteArray(message, KEY_CONTENT, null);
-    return new OutgoingMessageEntity(-1L, false, messageUuid, type, relay, timestamp, source, sourceUuid, sourceDevice, messageBytes, content, sortKey.getServerTimestamp());
+    return new OutgoingMessageEntity(messageUuid, type, timestamp, source, sourceUuid, sourceDevice, destinationUuid, content, sortKey.getServerTimestamp());
   }
 
   private void deleteRowsMatchingQuery(AttributeValue partitionKey, QueryRequest querySpec) {
-    writeInBatches(db().query(querySpec).items(), (itemBatch) -> deleteItems(partitionKey, itemBatch));
+    writeInBatches(db().queryPaginator(querySpec).items(), itemBatch -> deleteItems(partitionKey, itemBatch));
   }
 
   private void deleteItems(AttributeValue partitionKey, List<Map<String, AttributeValue>> items) {

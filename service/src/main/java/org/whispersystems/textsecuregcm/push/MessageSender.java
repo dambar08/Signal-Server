@@ -4,9 +4,14 @@
  */
 package org.whispersystems.textsecuregcm.push;
 
+import static com.codahale.metrics.MetricRegistry.name;
+import static org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
+
 import io.dropwizard.lifecycle.Managed;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
+import java.util.List;
+import java.util.Optional;
 import org.whispersystems.textsecuregcm.metrics.PushLatencyManager;
 import org.whispersystems.textsecuregcm.push.ApnMessage.Type;
 import org.whispersystems.textsecuregcm.redis.RedisOperation;
@@ -14,12 +19,6 @@ import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
 import org.whispersystems.textsecuregcm.util.Util;
-
-import java.util.List;
-import java.util.Optional;
-
-import static com.codahale.metrics.MetricRegistry.name;
-import static org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
 
 /**
  * A MessageSender sends Signal messages to destination devices. Messages may be "normal" user-to-user messages,
@@ -88,7 +87,7 @@ public class MessageSender implements Managed {
       clientPresent = clientPresenceManager.isPresent(account.getUuid(), device.getId());
 
       if (clientPresent) {
-        messagesManager.insertEphemeral(account.getUuid(), device.getId(), message);
+        messagesManager.insert(account.getUuid(), device.getId(), message.toBuilder().setEphemeral(true).build());
       }
     } else {
       messagesManager.insert(account.getUuid(), device.getId(), message);
@@ -120,27 +119,29 @@ public class MessageSender implements Managed {
   }
 
   private void sendGcmNotification(Account account, Device device) {
-    GcmMessage gcmMessage = new GcmMessage(device.getGcmId(), account.getNumber(),
+    GcmMessage gcmMessage = new GcmMessage(device.getGcmId(), account.getUuid(),
                                            (int)device.getId(), GcmMessage.Type.NOTIFICATION, Optional.empty());
 
     gcmSender.sendMessage(gcmMessage);
 
-    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId()));
+    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId(), false));
   }
 
   private void sendApnNotification(Account account, Device device) {
     ApnMessage apnMessage;
 
-    if (!Util.isEmpty(device.getVoipApnId())) {
-      apnMessage = new ApnMessage(device.getVoipApnId(), account.getNumber(), device.getId(), true, Type.NOTIFICATION, Optional.empty());
+    final boolean useVoip = !Util.isEmpty(device.getVoipApnId());
+
+    if (useVoip) {
+      apnMessage = new ApnMessage(device.getVoipApnId(), account.getUuid(), device.getId(), useVoip, Type.NOTIFICATION, Optional.empty());
       RedisOperation.unchecked(() -> apnFallbackManager.schedule(account, device));
     } else {
-      apnMessage = new ApnMessage(device.getApnId(), account.getNumber(), device.getId(), false, Type.NOTIFICATION, Optional.empty());
+      apnMessage = new ApnMessage(device.getApnId(), account.getUuid(), device.getId(), useVoip, Type.NOTIFICATION, Optional.empty());
     }
 
     apnSender.sendMessage(apnMessage);
 
-    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId()));
+    RedisOperation.unchecked(() -> pushLatencyManager.recordPushSent(account.getUuid(), device.getId(), useVoip));
   }
 
   @Override

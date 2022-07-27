@@ -23,6 +23,7 @@ import org.whispersystems.textsecuregcm.push.NotPushRegisteredException;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.PushChallengeDynamoDb;
+import org.whispersystems.textsecuregcm.util.Util;
 import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 
 public class PushChallengeManager {
@@ -42,6 +43,7 @@ public class PushChallengeManager {
   private static final String PLATFORM_TAG_NAME = "platform";
   private static final String SENT_TAG_NAME = "sent";
   private static final String SUCCESS_TAG_NAME = "success";
+  private static final String SOURCE_COUNTRY_TAG_NAME = "sourceCountry";
 
   public PushChallengeManager(final APNSender apnSender, final GCMSender gcmSender,
       final PushChallengeDynamoDb pushChallengeDynamoDb) {
@@ -69,10 +71,10 @@ public class PushChallengeManager {
       sent = true;
 
       if (StringUtils.isNotBlank(masterDevice.getGcmId())) {
-        gcmSender.sendMessage(new GcmMessage(masterDevice.getGcmId(), account.getNumber(), 0, GcmMessage.Type.RATE_LIMIT_CHALLENGE, Optional.of(tokenHex)));
+        gcmSender.sendMessage(new GcmMessage(masterDevice.getGcmId(), account.getUuid(), 0, GcmMessage.Type.RATE_LIMIT_CHALLENGE, Optional.of(tokenHex)));
         platform = ClientPlatform.ANDROID.name().toLowerCase();
       } else if (StringUtils.isNotBlank(masterDevice.getApnId())) {
-        apnSender.sendMessage(new ApnMessage(masterDevice.getApnId(), account.getNumber(), 0, false, Type.RATE_LIMIT_CHALLENGE, Optional.of(tokenHex)));
+        apnSender.sendMessage(new ApnMessage(masterDevice.getApnId(), account.getUuid(), 0, false, Type.RATE_LIMIT_CHALLENGE, Optional.of(tokenHex)));
         platform = ClientPlatform.IOS.name().toLowerCase();
       } else {
         throw new AssertionError();
@@ -84,6 +86,7 @@ public class PushChallengeManager {
 
     Metrics.counter(CHALLENGE_REQUESTED_COUNTER_NAME,
         PLATFORM_TAG_NAME, platform,
+        SOURCE_COUNTRY_TAG_NAME, Util.getCountryCode(account.getNumber()),
         SENT_TAG_NAME, String.valueOf(sent)).increment();
   }
 
@@ -108,6 +111,7 @@ public class PushChallengeManager {
 
     Metrics.counter(CHALLENGE_ANSWERED_COUNTER_NAME,
         PLATFORM_TAG_NAME, platform,
+        SOURCE_COUNTRY_TAG_NAME, Util.getCountryCode(account.getNumber()),
         SUCCESS_TAG_NAME, String.valueOf(success)).increment();
 
     return success;

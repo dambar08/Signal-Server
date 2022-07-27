@@ -4,7 +4,13 @@
  */
 package org.whispersystems.websocket;
 
+import static java.util.Optional.ofNullable;
+
 import io.dropwizard.jersey.jackson.JacksonMessageBodyProvider;
+import java.io.IOException;
+import java.security.Principal;
+import java.util.Arrays;
+import java.util.Optional;
 import org.eclipse.jetty.websocket.servlet.ServletUpgradeRequest;
 import org.eclipse.jetty.websocket.servlet.ServletUpgradeResponse;
 import org.eclipse.jetty.websocket.servlet.WebSocketCreator;
@@ -17,24 +23,20 @@ import org.whispersystems.websocket.auth.AuthenticationException;
 import org.whispersystems.websocket.auth.WebSocketAuthenticator;
 import org.whispersystems.websocket.auth.WebSocketAuthenticator.AuthenticationResult;
 import org.whispersystems.websocket.auth.WebsocketAuthValueFactoryProvider;
+import org.whispersystems.websocket.configuration.WebSocketConfiguration;
 import org.whispersystems.websocket.session.WebSocketSessionContextValueFactoryProvider;
 import org.whispersystems.websocket.setup.WebSocketEnvironment;
-
-import java.io.IOException;
-import java.security.Principal;
-import java.util.Arrays;
-import java.util.Optional;
-
-import static java.util.Optional.ofNullable;
 
 public class WebSocketResourceProviderFactory<T extends Principal> extends WebSocketServlet implements WebSocketCreator {
 
   private static final Logger logger = LoggerFactory.getLogger(WebSocketResourceProviderFactory.class);
 
   private final WebSocketEnvironment<T> environment;
-  private final ApplicationHandler      jerseyApplicationHandler;
+  private final ApplicationHandler jerseyApplicationHandler;
+  private final WebSocketConfiguration configuration;
 
-  public WebSocketResourceProviderFactory(WebSocketEnvironment<T> environment, Class<T> principalClass) {
+  public WebSocketResourceProviderFactory(WebSocketEnvironment<T> environment, Class<T> principalClass,
+      WebSocketConfiguration configuration) {
     this.environment = environment;
 
     environment.jersey().register(new WebSocketSessionContextValueFactoryProvider.Binder());
@@ -42,6 +44,8 @@ public class WebSocketResourceProviderFactory<T extends Principal> extends WebSo
     environment.jersey().register(new JacksonMessageBodyProvider(environment.getObjectMapper()));
 
     this.jerseyApplicationHandler = new ApplicationHandler(environment.jersey());
+
+    this.configuration = configuration;
   }
 
   @Override
@@ -61,18 +65,19 @@ public class WebSocketResourceProviderFactory<T extends Principal> extends WebSo
         }
       }
 
-      return new WebSocketResourceProvider<T>(getRemoteAddress(request),
-                                              this.jerseyApplicationHandler,
-                                              this.environment.getRequestLog(),
-                                              authenticated,
-                                              this.environment.getMessageFactory(),
-                                              ofNullable(this.environment.getConnectListener()),
-                                              this.environment.getIdleTimeoutMillis());
+      return new WebSocketResourceProvider<>(getRemoteAddress(request),
+          this.jerseyApplicationHandler,
+          this.environment.getRequestLog(),
+          authenticated,
+          this.environment.getMessageFactory(),
+          ofNullable(this.environment.getConnectListener()),
+          this.environment.getIdleTimeoutMillis());
     } catch (AuthenticationException | IOException e) {
       logger.warn("Authentication failure", e);
       try {
         response.sendError(500, "Failure");
-      } catch (IOException ex) {}
+      } catch (IOException ignored) {
+      }
       return null;
     }
   }
@@ -80,6 +85,8 @@ public class WebSocketResourceProviderFactory<T extends Principal> extends WebSo
   @Override
   public void configure(WebSocketServletFactory factory) {
     factory.setCreator(this);
+    factory.getPolicy().setMaxBinaryMessageSize(configuration.getMaxBinaryMessageSize());
+    factory.getPolicy().setMaxTextMessageSize(configuration.getMaxTextMessageSize());
   }
 
   private String getRemoteAddress(ServletUpgradeRequest request) {

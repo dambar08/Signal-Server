@@ -15,6 +15,31 @@ import java.util.UUID;
 /** AwsAV provides static helper methods for working with AWS AttributeValues. */
 public class AttributeValues {
 
+  // Clear-type methods
+
+  public static AttributeValue b(byte[] value) {
+    return AttributeValue.builder().b(SdkBytes.fromByteArray(value)).build();
+  }
+
+  public static AttributeValue b(ByteBuffer value) {
+    return AttributeValue.builder().b(SdkBytes.fromByteBuffer(value)).build();
+  }
+
+  public static AttributeValue b(UUID value) {
+    return b(UUIDUtil.toByteBuffer(value));
+  }
+
+  public static AttributeValue n(long value) {
+    return AttributeValue.builder().n(String.valueOf(value)).build();
+  }
+
+  public static AttributeValue s(String value) {
+    return AttributeValue.builder().s(value).build();
+  }
+
+
+  // More opinionated methods
+
   public static AttributeValue fromString(String value) {
     return AttributeValue.builder().s(value).build();
   }
@@ -22,6 +47,8 @@ public class AttributeValues {
   public static AttributeValue fromLong(long value) {
     return AttributeValue.builder().n(Long.toString(value)).build();
   }
+
+  public static AttributeValue fromBool(boolean value) { return AttributeValue.builder().bool(value).build(); }
 
   public static AttributeValue fromInt(int value) {
     return AttributeValue.builder().n(Integer.toString(value)).build();
@@ -41,6 +68,10 @@ public class AttributeValues {
 
   public static AttributeValue fromSdkBytes(SdkBytes value) {
     return AttributeValue.builder().b(value).build();
+  }
+
+  private static boolean toBool(AttributeValue av) {
+    return av.bool();
   }
 
   private static int toInt(AttributeValue av) {
@@ -67,6 +98,10 @@ public class AttributeValues {
     return Optional.ofNullable(item.get(key));
   }
 
+  public static boolean getBool(Map<String, AttributeValue> item, String key, boolean defaultValue) {
+    return AttributeValues.get(item, key).map(AttributeValues::toBool).orElse(defaultValue);
+  }
+
   public static int getInt(Map<String, AttributeValue> item, String key, int defaultValue) {
     return AttributeValues.get(item, key).map(AttributeValues::toInt).orElse(defaultValue);
   }
@@ -84,6 +119,6 @@ public class AttributeValues {
   }
 
   public static UUID getUUID(Map<String, AttributeValue> item, String key, UUID defaultValue) {
-    return AttributeValues.get(item, key).map(AttributeValues::toUUID).orElse(defaultValue);
+    return AttributeValues.get(item, key).filter(av -> av.b() != null).map(AttributeValues::toUUID).orElse(defaultValue);
   }
 }

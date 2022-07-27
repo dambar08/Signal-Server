@@ -7,11 +7,13 @@ package org.whispersystems.textsecuregcm.controllers;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import io.dropwizard.auth.PolymorphicAuthValueFactoryProvider;
 import io.dropwizard.testing.junit5.DropwizardExtensionsSupport;
@@ -24,11 +26,11 @@ import org.glassfish.jersey.test.grizzly.GrizzlyWebTestContainerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.whispersystems.textsecuregcm.auth.DisabledPermittedAccount;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.auth.DisabledPermittedAuthenticatedAccount;
 import org.whispersystems.textsecuregcm.limits.RateLimitChallengeManager;
-import org.whispersystems.textsecuregcm.mappers.RetryLaterExceptionMapper;
+import org.whispersystems.textsecuregcm.mappers.RateLimitExceededExceptionMapper;
 import org.whispersystems.textsecuregcm.push.NotPushRegisteredException;
-import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
 
@@ -41,10 +43,11 @@ class ChallengeControllerTest {
 
   private static final ResourceExtension EXTENSION = ResourceExtension.builder()
       .addProvider(AuthHelper.getAuthFilter())
-      .addProvider(new PolymorphicAuthValueFactoryProvider.Binder<>(Set.of(Account.class, DisabledPermittedAccount.class)))
+      .addProvider(new PolymorphicAuthValueFactoryProvider.Binder<>(
+          Set.of(AuthenticatedAccount.class, DisabledPermittedAuthenticatedAccount.class)))
       .setMapper(SystemMapper.getMapper())
       .setTestContainerFactory(new GrizzlyWebTestContainerFactory())
-      .addResource(new RetryLaterExceptionMapper())
+      .addResource(new RateLimitExceededExceptionMapper())
       .addResource(challengeController)
       .build();
 
@@ -55,14 +58,16 @@ class ChallengeControllerTest {
 
   @Test
   void testHandlePushChallenge() throws RateLimitExceededException {
-    final String pushChallengeJson = "{\n"
-        + "  \"type\": \"rateLimitPushChallenge\",\n"
-        + "  \"challenge\": \"Hello I am a push challenge token\"\n"
-        + "}";
+    final String pushChallengeJson = """
+        {
+          "type": "rateLimitPushChallenge",
+          "challenge": "Hello I am a push challenge token"
+        }
+        """;
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(pushChallengeJson));
 
     assertEquals(200, response.getStatus());
@@ -71,17 +76,19 @@ class ChallengeControllerTest {
 
   @Test
   void testHandlePushChallengeRateLimited() throws RateLimitExceededException {
-    final String pushChallengeJson = "{\n"
-        + "  \"type\": \"rateLimitPushChallenge\",\n"
-        + "  \"challenge\": \"Hello I am a push challenge token\"\n"
-        + "}";
+    final String pushChallengeJson = """
+        {
+          "type": "rateLimitPushChallenge",
+          "challenge": "Hello I am a push challenge token"
+        }
+        """;
 
     final Duration retryAfter = Duration.ofMinutes(17);
     doThrow(new RateLimitExceededException(retryAfter)).when(rateLimitChallengeManager).answerPushChallenge(any(), any());
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(pushChallengeJson));
 
     assertEquals(413, response.getStatus());
@@ -90,37 +97,41 @@ class ChallengeControllerTest {
 
   @Test
   void testHandleRecaptcha() throws RateLimitExceededException {
-    final String recaptchaChallengeJson = "{\n"
-        + "  \"type\": \"recaptcha\",\n"
-        + "  \"token\": \"A server-generated token\",\n"
-        + "  \"captcha\": \"The value of the solved captcha token\"\n"
-        + "}";
+    final String recaptchaChallengeJson = """
+        {
+          "type": "recaptcha",
+          "token": "A server-generated token",
+          "captcha": "The value of the solved captcha token"
+        }
+        """;
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
         .header("X-Forwarded-For", "10.0.0.1")
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(recaptchaChallengeJson));
 
     assertEquals(200, response.getStatus());
-    verify(rateLimitChallengeManager).answerRecaptchaChallenge(AuthHelper.VALID_ACCOUNT, "The value of the solved captcha token", "10.0.0.1");
+    verify(rateLimitChallengeManager).answerRecaptchaChallenge(eq(AuthHelper.VALID_ACCOUNT), eq("The value of the solved captcha token"), eq("10.0.0.1"), anyString());
   }
 
   @Test
   void testHandleRecaptchaRateLimited() throws RateLimitExceededException {
-    final String recaptchaChallengeJson = "{\n"
-        + "  \"type\": \"recaptcha\",\n"
-        + "  \"token\": \"A server-generated token\",\n"
-        + "  \"captcha\": \"The value of the solved captcha token\"\n"
-        + "}";
+    final String recaptchaChallengeJson = """
+        {
+          "type": "recaptcha",
+          "token": "A server-generated token",
+          "captcha": "The value of the solved captcha token"
+        }
+        """;
 
     final Duration retryAfter = Duration.ofMinutes(17);
-    doThrow(new RateLimitExceededException(retryAfter)).when(rateLimitChallengeManager).answerRecaptchaChallenge(any(), any(), any());
+    doThrow(new RateLimitExceededException(retryAfter)).when(rateLimitChallengeManager).answerRecaptchaChallenge(any(), any(), any(), any());
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
         .header("X-Forwarded-For", "10.0.0.1")
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(recaptchaChallengeJson));
 
     assertEquals(413, response.getStatus());
@@ -129,36 +140,40 @@ class ChallengeControllerTest {
 
   @Test
   void testHandleRecaptchaNoForwardedFor() {
-    final String recaptchaChallengeJson = "{\n"
-        + "  \"type\": \"recaptcha\",\n"
-        + "  \"token\": \"A server-generated token\",\n"
-        + "  \"captcha\": \"The value of the solved captcha token\"\n"
-        + "}";
+    final String recaptchaChallengeJson = """
+        {
+          "type": "recaptcha",
+          "token": "A server-generated token",
+          "captcha": "The value of the solved captcha token"
+        }
+        """;
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(recaptchaChallengeJson));
 
     assertEquals(400, response.getStatus());
-    verifyZeroInteractions(rateLimitChallengeManager);
+    verifyNoInteractions(rateLimitChallengeManager);
   }
 
   @Test
   void testHandleUnrecognizedAnswer() {
-    final String unrecognizedJson = "{\n"
-        + "  \"type\": \"unrecognized\"\n"
-        + "}";
+    final String unrecognizedJson = """
+        {
+          "type": "unrecognized"
+        }
+        """;
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
         .header("X-Forwarded-For", "10.0.0.1")
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(unrecognizedJson));
 
     assertEquals(400, response.getStatus());
 
-    verifyZeroInteractions(rateLimitChallengeManager);
+    verifyNoInteractions(rateLimitChallengeManager);
   }
 
   @Test
@@ -166,7 +181,7 @@ class ChallengeControllerTest {
     {
       final Response response = EXTENSION.target("/v1/challenge/push")
           .request()
-          .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+          .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
           .post(Entity.text(""));
 
       assertEquals(200, response.getStatus());
@@ -177,7 +192,7 @@ class ChallengeControllerTest {
 
       final Response response = EXTENSION.target("/v1/challenge/push")
           .request()
-          .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER_TWO, AuthHelper.VALID_PASSWORD_TWO))
+          .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID_TWO, AuthHelper.VALID_PASSWORD_TWO))
           .post(Entity.text(""));
 
       assertEquals(404, response.getStatus());
@@ -186,13 +201,15 @@ class ChallengeControllerTest {
 
   @Test
   void testValidationError() {
-    final String unrecognizedJson = "{\n"
-        + "  \"type\": \"rateLimitPushChallenge\"\n"
-        + "}";
+    final String unrecognizedJson = """
+        {
+          "type": "rateLimitPushChallenge"
+        }
+        """;
 
     final Response response = EXTENSION.target("/v1/challenge")
         .request()
-        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
         .put(Entity.json(unrecognizedJson));
 
     assertEquals(422, response.getStatus());

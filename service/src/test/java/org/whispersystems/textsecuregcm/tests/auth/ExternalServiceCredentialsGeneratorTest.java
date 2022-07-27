@@ -5,17 +5,17 @@
 
 package org.whispersystems.textsecuregcm.tests.auth;
 
-import org.junit.Test;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+
+import org.junit.jupiter.api.Test;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialGenerator;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
-
-public class ExternalServiceCredentialsGeneratorTest {
+class ExternalServiceCredentialsGeneratorTest {
 
   @Test
-  public void testGenerateDerivedUsername() {
-    ExternalServiceCredentialGenerator generator = new ExternalServiceCredentialGenerator(new byte[32], new byte[32], true);
+  void testGenerateDerivedUsername() {
+    ExternalServiceCredentialGenerator generator = new ExternalServiceCredentialGenerator(new byte[32], new byte[32]);
     ExternalServiceCredentials credentials = generator.generateFor("+14152222222");
 
     assertThat(credentials.getUsername()).isNotEqualTo("+14152222222");
@@ -23,7 +23,7 @@ public class ExternalServiceCredentialsGeneratorTest {
   }
 
   @Test
-  public void testGenerateNoDerivedUsername() {
+  void testGenerateNoDerivedUsername() {
     ExternalServiceCredentialGenerator generator = new ExternalServiceCredentialGenerator(new byte[32], new byte[32], false);
     ExternalServiceCredentials credentials = generator.generateFor("+14152222222");
 

@@ -28,10 +28,6 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private DynamicMessageRateConfiguration messageRate = new DynamicMessageRateConfiguration();
-
-  @JsonProperty
-  @Valid
   private DynamicPaymentsConfiguration payments = new DynamicPaymentsConfiguration();
 
   @JsonProperty
@@ -42,22 +38,31 @@ public class DynamicConfiguration {
   private DynamicTwilioConfiguration twilio = new DynamicTwilioConfiguration();
 
   @JsonProperty
-  private DynamicSignupCaptchaConfiguration signupCaptcha = new DynamicSignupCaptchaConfiguration();
-
-  @JsonProperty
-  private DynamicAccountsDynamoDbMigrationConfiguration accountsDynamoDbMigration = new DynamicAccountsDynamoDbMigrationConfiguration();
+  @Valid
+  private DynamicCaptchaConfiguration captcha = new DynamicCaptchaConfiguration();
 
   @JsonProperty
   @Valid
   private DynamicRateLimitChallengeConfiguration rateLimitChallenge = new DynamicRateLimitChallengeConfiguration();
 
   @JsonProperty
-  @Valid
-  private DynamicVerificationCodeStoreMigrationConfiguration pendingAccountsMigration = new DynamicVerificationCodeStoreMigrationConfiguration();
+  private DynamicDirectoryReconcilerConfiguration directoryReconciler = new DynamicDirectoryReconcilerConfiguration();
 
   @JsonProperty
   @Valid
-  private DynamicVerificationCodeStoreMigrationConfiguration pendingDevicesMigration = new DynamicVerificationCodeStoreMigrationConfiguration();
+  private DynamicPushLatencyConfiguration pushLatency = new DynamicPushLatencyConfiguration(Collections.emptyMap());
+
+  @JsonProperty
+  @Valid
+  private DynamicUakMigrationConfiguration uakMigrationConfiguration = new DynamicUakMigrationConfiguration();
+
+  @JsonProperty
+  @Valid
+  private DynamicTurnConfiguration turn = new DynamicTurnConfiguration();
+
+  @JsonProperty
+  @Valid
+  DynamicAbusiveHostRulesConfiguration abusiveHostRules = new DynamicAbusiveHostRulesConfiguration();
 
   public Optional<DynamicExperimentEnrollmentConfiguration> getExperimentEnrollmentConfiguration(
       final String experimentName) {
@@ -77,10 +82,6 @@ public class DynamicConfiguration {
     return remoteDeprecation;
   }
 
-  public DynamicMessageRateConfiguration getMessageRateConfiguration() {
-    return messageRate;
-  }
-
   public DynamicPaymentsConfiguration getPaymentsConfiguration() {
     return payments;
   }
@@ -98,23 +99,29 @@ public class DynamicConfiguration {
     this.twilio = twilioConfiguration;
   }
 
-  public DynamicSignupCaptchaConfiguration getSignupCaptchaConfiguration() {
-    return signupCaptcha;
-  }
-
-  public DynamicAccountsDynamoDbMigrationConfiguration getAccountsDynamoDbMigrationConfiguration() {
-    return accountsDynamoDbMigration;
+  public DynamicCaptchaConfiguration getCaptchaConfiguration() {
+    return captcha;
   }
 
   public DynamicRateLimitChallengeConfiguration getRateLimitChallengeConfiguration() {
     return rateLimitChallenge;
   }
 
-  public DynamicVerificationCodeStoreMigrationConfiguration getPendingAccountsMigrationConfiguration() {
-    return pendingAccountsMigration;
+  public DynamicDirectoryReconcilerConfiguration getDirectoryReconcilerConfiguration() {
+    return directoryReconciler;
   }
 
-  public DynamicVerificationCodeStoreMigrationConfiguration getPendingDevicesMigrationConfiguration() {
-    return pendingDevicesMigration;
+  public DynamicPushLatencyConfiguration getPushLatencyConfiguration() {
+    return pushLatency;
+  }
+
+  public DynamicUakMigrationConfiguration getUakMigrationConfiguration() { return uakMigrationConfiguration; }
+
+  public DynamicTurnConfiguration getTurnConfiguration() {
+    return turn;
+  }
+
+  public DynamicAbusiveHostRulesConfiguration getAbusiveHostRules() {
+    return abusiveHostRules;
   }
 }

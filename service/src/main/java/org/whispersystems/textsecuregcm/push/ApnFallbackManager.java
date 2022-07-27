@@ -18,7 +18,6 @@ import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.push.ApnMessage.Type;
 import org.whispersystems.textsecuregcm.redis.ClusterLuaScript;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
-import org.whispersystems.textsecuregcm.redis.RedisException;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
@@ -100,7 +99,7 @@ public class ApnFallbackManager implements Managed {
 
           final Optional<Account> maybeAccount = separated.map(Pair::first)
                                                           .map(UUID::fromString)
-                                                          .flatMap(accountsManager::get);
+                                                          .flatMap(accountsManager::getByAccountIdentifier);
 
           final Optional<Device> maybeDevice = separated.map(Pair::second)
                                                         .flatMap(deviceId -> maybeAccount.flatMap(account -> account.getDevice(deviceId)));
@@ -135,27 +134,19 @@ public class ApnFallbackManager implements Managed {
     }
   }
 
-  public void schedule(Account account, Device device) throws RedisException {
+  public void schedule(Account account, Device device) {
     schedule(account, device, System.currentTimeMillis());
   }
 
   @VisibleForTesting
-  void schedule(Account account, Device device, long timestamp) throws RedisException {
-    try {
-      sent.mark();
-      insert(account, device, timestamp + (15 * 1000), (15 * 1000));
-    } catch (io.lettuce.core.RedisException e) {
-      throw new RedisException(e);
-    }
+  void schedule(Account account, Device device, long timestamp) {
+    sent.mark();
+    insert(account, device, timestamp + (15 * 1000), (15 * 1000));
   }
 
-  public void cancel(Account account, Device device) throws RedisException {
-    try {
-      if (remove(account, device)) {
-        delivered.mark();
-      }
-    } catch (io.lettuce.core.RedisException e) {
-      throw new RedisException(e);
+  public void cancel(Account account, Device device) {
+    if (remove(account, device)) {
+      delivered.mark();
     }
   }
 
@@ -193,7 +184,7 @@ public class ApnFallbackManager implements Managed {
       return;
     }
 
-    apnSender.sendMessage(new ApnMessage(apnId, account.getNumber(), device.getId(), true, Type.NOTIFICATION, Optional.empty()));
+    apnSender.sendMessage(new ApnMessage(apnId, account.getUuid(), device.getId(), true, Type.NOTIFICATION, Optional.empty()));
     retry.mark();
   }
 

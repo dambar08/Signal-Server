@@ -5,7 +5,6 @@
 package org.whispersystems.textsecuregcm.configuration;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import java.time.Duration;
 
 public class RateLimitsConfiguration {
 
@@ -37,7 +36,7 @@ public class RateLimitsConfiguration {
   private RateLimitConfiguration attachments = new RateLimitConfiguration(50, 50);
 
   @JsonProperty
-  private RateLimitConfiguration prekeys = new RateLimitConfiguration(3, 1.0 / 10.0);
+  private RateLimitConfiguration prekeys = new RateLimitConfiguration(6, 1.0 / 10.0);
 
   @JsonProperty
   private RateLimitConfiguration messages = new RateLimitConfiguration(60, 60);
@@ -46,7 +45,7 @@ public class RateLimitsConfiguration {
   private RateLimitConfiguration allocateDevice = new RateLimitConfiguration(2, 1.0 / 2.0);
 
   @JsonProperty
-  private RateLimitConfiguration verifyDevice = new RateLimitConfiguration(2, 2);
+  private RateLimitConfiguration verifyDevice = new RateLimitConfiguration(6, 1.0 / 10.0);
 
   @JsonProperty
   private RateLimitConfiguration turnAllocations = new RateLimitConfiguration(60, 60);
@@ -62,6 +61,9 @@ public class RateLimitsConfiguration {
 
   @JsonProperty
   private RateLimitConfiguration usernameSet = new RateLimitConfiguration(100, 100 / (24.0 * 60.0));
+
+  @JsonProperty
+  private RateLimitConfiguration checkAccountExistence = new RateLimitConfiguration(1_000, 1_000 / 60.0);
 
   public RateLimitConfiguration getAutoBlock() {
     return autoBlock;
@@ -135,6 +137,10 @@ public class RateLimitsConfiguration {
     return usernameSet;
   }
 
+  public RateLimitConfiguration getCheckAccountExistence() {
+    return checkAccountExistence;
+  }
+
   public static class RateLimitConfiguration {
     @JsonProperty
     private int bucketSize;
@@ -155,30 +161,6 @@ public class RateLimitsConfiguration {
 
     public double getLeakRatePerMinute() {
       return leakRatePerMinute;
-    }
-  }
-
-  public static class CardinalityRateLimitConfiguration {
-    @JsonProperty
-    private int maxCardinality;
-
-    @JsonProperty
-    private Duration ttl;
-
-    public CardinalityRateLimitConfiguration() {
-    }
-
-    public CardinalityRateLimitConfiguration(int maxCardinality, Duration ttl) {
-      this.maxCardinality = maxCardinality;
-      this.ttl = ttl;
-    }
-
-    public int getMaxCardinality() {
-      return maxCardinality;
-    }
-
-    public Duration getTtl() {
-      return ttl;
     }
   }
 }

@@ -1,57 +1,73 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2021 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.tests.controllers;
 
-import static junit.framework.TestCase.assertTrue;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.common.collect.ImmutableSet;
 import io.dropwizard.auth.PolymorphicAuthValueFactoryProvider;
-import io.dropwizard.testing.junit.ResourceTestRule;
+import io.dropwizard.testing.junit5.DropwizardExtensionsSupport;
+import io.dropwizard.testing.junit5.ResourceExtension;
 import java.io.IOException;
-import java.util.Arrays;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.stream.Stream;
 import javax.ws.rs.core.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.glassfish.jersey.test.grizzly.GrizzlyWebTestContainerFactory;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.signal.zkgroup.InvalidInputException;
-import org.signal.zkgroup.ServerSecretParams;
-import org.signal.zkgroup.VerificationFailedException;
-import org.signal.zkgroup.auth.AuthCredential;
-import org.signal.zkgroup.auth.AuthCredentialResponse;
-import org.signal.zkgroup.auth.ClientZkAuthOperations;
-import org.signal.zkgroup.auth.ServerZkAuthOperations;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.signal.libsignal.protocol.ecc.Curve;
+import org.signal.libsignal.zkgroup.ServerSecretParams;
+import org.signal.libsignal.zkgroup.VerificationFailedException;
+import org.signal.libsignal.zkgroup.auth.AuthCredentialResponse;
+import org.signal.libsignal.zkgroup.auth.AuthCredentialWithPniResponse;
+import org.signal.libsignal.zkgroup.auth.ClientZkAuthOperations;
+import org.signal.libsignal.zkgroup.auth.ServerZkAuthOperations;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
 import org.whispersystems.textsecuregcm.auth.CertificateGenerator;
-import org.whispersystems.textsecuregcm.auth.DisabledPermittedAccount;
+import org.whispersystems.textsecuregcm.auth.DisabledPermittedAuthenticatedAccount;
 import org.whispersystems.textsecuregcm.auth.OptionalAccess;
 import org.whispersystems.textsecuregcm.controllers.CertificateController;
-import org.whispersystems.textsecuregcm.crypto.Curve;
 import org.whispersystems.textsecuregcm.entities.DeliveryCertificate;
 import org.whispersystems.textsecuregcm.entities.GroupCredentials;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.SenderCertificate;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.ServerCertificate;
-import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.textsecuregcm.util.Util;
 
-public class CertificateControllerTest {
+@ExtendWith(DropwizardExtensionsSupport.class)
+class CertificateControllerTest {
 
   private static final String caPublicKey = "BWh+UOhT1hD8bkb+MFRvb6tVqhoG8YYGCzOd7mgjo8cV";
+
+  @SuppressWarnings("unused")
   private static final String caPrivateKey = "EO3Mnf0kfVlVnwSaqPoQnAxhnnGL1JTdXqktCKEe9Eo=";
 
   private static final String signingCertificate = "CiUIDBIhBbTz4h1My+tt+vw+TVscgUe/DeHS0W02tPWAWbTO2xc3EkD+go4bJnU0AcnFfbOLKoiBfCzouZtDYMOVi69rE7r4U9cXREEqOkUmU2WJBjykAxWPCcSTmVTYHDw7hkSp/puG";
   private static final String signingKey         = "ABOxG29xrfq4E7IrW11Eg7+HBbtba9iiS0500YoBjn4=";
 
-  private static ServerSecretParams     serverSecretParams = ServerSecretParams.generate();
-  private static CertificateGenerator   certificateGenerator;
-  private static ServerZkAuthOperations serverZkAuthOperations;
+  private static final ServerSecretParams     serverSecretParams = ServerSecretParams.generate();
+  private static final CertificateGenerator   certificateGenerator;
+  private static final ServerZkAuthOperations serverZkAuthOperations;
+  private static final Clock clock = Clock.fixed(Instant.now(), ZoneId.systemDefault());
 
   static {
     try {
@@ -63,21 +79,21 @@ public class CertificateControllerTest {
   }
 
 
-  @ClassRule
-  public static final ResourceTestRule resources = ResourceTestRule.builder()
-                                                                   .addProvider(AuthHelper.getAuthFilter())
-                                                                   .addProvider(new PolymorphicAuthValueFactoryProvider.Binder<>(ImmutableSet.of(Account.class, DisabledPermittedAccount.class)))
-                                                                   .setMapper(SystemMapper.getMapper())
-                                                                   .setTestContainerFactory(new GrizzlyWebTestContainerFactory())
-                                                                   .addResource(new CertificateController(certificateGenerator, serverZkAuthOperations, true))
-                                                                   .build();
+  private static final ResourceExtension resources = ResourceExtension.builder()
+      .addProvider(AuthHelper.getAuthFilter())
+      .addProvider(new PolymorphicAuthValueFactoryProvider.Binder<>(
+          ImmutableSet.of(AuthenticatedAccount.class, DisabledPermittedAuthenticatedAccount.class)))
+      .setMapper(SystemMapper.getMapper())
+      .setTestContainerFactory(new GrizzlyWebTestContainerFactory())
+      .addResource(new CertificateController(certificateGenerator, serverZkAuthOperations, clock))
+      .build();
 
   @Test
-  public void testValidCertificate() throws Exception {
+  void testValidCertificate() throws Exception {
     DeliveryCertificate certificateObject = resources.getJerseyTest()
                                                      .target("/v1/certificate/delivery")
                                                      .request()
-                                                     .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                                     .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                                      .get(DeliveryCertificate.class);
 
 
@@ -94,16 +110,16 @@ public class CertificateControllerTest {
     assertEquals(certificate.getSenderDevice(), 1L);
     assertTrue(certificate.hasSenderUuid());
     assertEquals(AuthHelper.VALID_UUID.toString(), certificate.getSenderUuid());
-    assertTrue(Arrays.equals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY)));
+    assertArrayEquals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY));
   }
 
   @Test
-  public void testValidCertificateWithUuid() throws Exception {
+  void testValidCertificateWithUuid() throws Exception {
     DeliveryCertificate certificateObject = resources.getJerseyTest()
                                                      .target("/v1/certificate/delivery")
                                                      .queryParam("includeUuid", "true")
                                                      .request()
-                                                     .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                                     .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                                      .get(DeliveryCertificate.class);
 
 
@@ -119,17 +135,17 @@ public class CertificateControllerTest {
     assertEquals(certificate.getSender(), AuthHelper.VALID_NUMBER);
     assertEquals(certificate.getSenderDevice(), 1L);
     assertEquals(certificate.getSenderUuid(), AuthHelper.VALID_UUID.toString());
-    assertTrue(Arrays.equals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY)));
+    assertArrayEquals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY));
   }
 
   @Test
-  public void testValidCertificateWithUuidNoE164() throws Exception {
+  void testValidCertificateWithUuidNoE164() throws Exception {
     DeliveryCertificate certificateObject = resources.getJerseyTest()
             .target("/v1/certificate/delivery")
             .queryParam("includeUuid", "true")
             .queryParam("includeE164", "false")
             .request()
-            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
             .get(DeliveryCertificate.class);
 
 
@@ -145,15 +161,15 @@ public class CertificateControllerTest {
     assertTrue(StringUtils.isBlank(certificate.getSender()));
     assertEquals(certificate.getSenderDevice(), 1L);
     assertEquals(certificate.getSenderUuid(), AuthHelper.VALID_UUID.toString());
-    assertTrue(Arrays.equals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY)));
+    assertArrayEquals(certificate.getIdentityKey().toByteArray(), Base64.getDecoder().decode(AuthHelper.VALID_IDENTITY));
   }
 
   @Test
-  public void testBadAuthentication() throws Exception {
+  void testBadAuthentication() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/delivery")
                                  .request()
-                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.INVALID_PASSWORD))
+                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.INVALID_PASSWORD))
                                  .get();
 
     assertEquals(response.getStatus(), 401);
@@ -161,7 +177,7 @@ public class CertificateControllerTest {
 
 
   @Test
-  public void testNoAuthentication() throws Exception {
+  void testNoAuthentication() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/delivery")
                                  .request()
@@ -172,7 +188,7 @@ public class CertificateControllerTest {
 
 
   @Test
-  public void testUnidentifiedAuthentication() throws Exception {
+  void testUnidentifiedAuthentication() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/delivery")
                                  .request()
@@ -183,37 +199,59 @@ public class CertificateControllerTest {
   }
 
   @Test
-  public void testDisabledAuthentication() throws Exception {
+  void testDisabledAuthentication() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/delivery")
                                  .request()
-                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.DISABLED_NUMBER, AuthHelper.DISABLED_PASSWORD))
+                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.DISABLED_UUID, AuthHelper.DISABLED_PASSWORD))
                                  .get();
 
     assertEquals(response.getStatus(), 401);
   }
 
   @Test
-  public void testGetSingleAuthCredential() throws InvalidInputException, VerificationFailedException {
+  void testGetSingleAuthCredential() {
     GroupCredentials credentials = resources.getJerseyTest()
                                             .target("/v1/certificate/group/" + Util.currentDaysSinceEpoch() + "/" + Util.currentDaysSinceEpoch())
                                             .request()
-                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                             .get(GroupCredentials.class);
 
     assertThat(credentials.getCredentials().size()).isEqualTo(1);
     assertThat(credentials.getCredentials().get(0).getRedemptionTime()).isEqualTo(Util.currentDaysSinceEpoch());
 
     ClientZkAuthOperations clientZkAuthOperations = new ClientZkAuthOperations(serverSecretParams.getPublicParams());
-    AuthCredential         credential             = clientZkAuthOperations.receiveAuthCredential(AuthHelper.VALID_UUID, Util.currentDaysSinceEpoch(), new AuthCredentialResponse(credentials.getCredentials().get(0).getCredential()));
+
+    assertThatCode(() ->
+        clientZkAuthOperations.receiveAuthCredential(AuthHelper.VALID_UUID, Util.currentDaysSinceEpoch(), new AuthCredentialResponse(credentials.getCredentials().get(0).getCredential())))
+        .doesNotThrowAnyException();
   }
 
   @Test
-  public void testGetWeekLongAuthCredentials() throws InvalidInputException, VerificationFailedException {
+  void testGetSingleAuthCredentialByPni() {
+    GroupCredentials credentials = resources.getJerseyTest()
+        .target("/v1/certificate/group/" + Util.currentDaysSinceEpoch() + "/" + Util.currentDaysSinceEpoch())
+        .queryParam("identity", "pni")
+        .request()
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+        .get(GroupCredentials.class);
+
+    assertThat(credentials.getCredentials().size()).isEqualTo(1);
+    assertThat(credentials.getCredentials().get(0).getRedemptionTime()).isEqualTo(Util.currentDaysSinceEpoch());
+
+    ClientZkAuthOperations clientZkAuthOperations = new ClientZkAuthOperations(serverSecretParams.getPublicParams());
+
+    assertThatExceptionOfType(VerificationFailedException.class)
+        .isThrownBy(() ->
+            clientZkAuthOperations.receiveAuthCredential(AuthHelper.VALID_UUID, Util.currentDaysSinceEpoch(), new AuthCredentialResponse(credentials.getCredentials().get(0).getCredential())));
+  }
+
+  @Test
+  void testGetWeekLongAuthCredentials() {
     GroupCredentials credentials = resources.getJerseyTest()
                                             .target("/v1/certificate/group/" + Util.currentDaysSinceEpoch() + "/" + (Util.currentDaysSinceEpoch() + 7))
                                             .request()
-                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                             .get(GroupCredentials.class);
 
     assertThat(credentials.getCredentials().size()).isEqualTo(8);
@@ -222,40 +260,138 @@ public class CertificateControllerTest {
       assertThat(credentials.getCredentials().get(i).getRedemptionTime()).isEqualTo(Util.currentDaysSinceEpoch() + i);
 
       ClientZkAuthOperations clientZkAuthOperations = new ClientZkAuthOperations(serverSecretParams.getPublicParams());
-      AuthCredential         credential             = clientZkAuthOperations.receiveAuthCredential(AuthHelper.VALID_UUID, Util.currentDaysSinceEpoch() + i , new AuthCredentialResponse(credentials.getCredentials().get(i).getCredential()));
+
+      final int time = i;
+
+      assertThatCode(() ->
+          clientZkAuthOperations.receiveAuthCredential(AuthHelper.VALID_UUID, Util.currentDaysSinceEpoch() + time , new AuthCredentialResponse(credentials.getCredentials().get(time).getCredential())))
+          .doesNotThrowAnyException();
     }
   }
 
   @Test
-  public void testTooManyDaysOut() throws InvalidInputException {
+  void testTooManyDaysOut() {
     Response response = resources.getJerseyTest()
                                             .target("/v1/certificate/group/" + Util.currentDaysSinceEpoch() + "/" + (Util.currentDaysSinceEpoch() + 8))
                                             .request()
-                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                             .get();
 
     assertThat(response.getStatus()).isEqualTo(400);
   }
 
   @Test
-  public void testBackwardsInTime() throws InvalidInputException {
+  void testBackwardsInTime() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/group/" + (Util.currentDaysSinceEpoch() - 1) + "/" + (Util.currentDaysSinceEpoch() + 7))
                                  .request()
-                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.VALID_PASSWORD))
+                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                                  .get();
 
     assertThat(response.getStatus()).isEqualTo(400);
   }
 
   @Test
-  public void testBadAuth() throws InvalidInputException {
+  void testBadAuth() {
     Response response = resources.getJerseyTest()
                                  .target("/v1/certificate/group/" + Util.currentDaysSinceEpoch() + "/" + (Util.currentDaysSinceEpoch() + 7))
                                  .request()
-                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_NUMBER, AuthHelper.INVALID_PASSWORD))
+                                 .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.INVALID_PASSWORD))
                                  .get();
 
     assertThat(response.getStatus()).isEqualTo(401);
+  }
+
+  @Test
+  void testGetSingleGroupCredential() {
+    final Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
+
+    final GroupCredentials credentials = resources.getJerseyTest()
+        .target("/v1/certificate/auth/group")
+        .queryParam("redemptionStartSeconds", startOfDay.getEpochSecond())
+        .queryParam("redemptionEndSeconds", startOfDay.getEpochSecond())
+        .request()
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+        .get(GroupCredentials.class);
+
+    assertEquals(1, credentials.getCredentials().size());
+    assertEquals(startOfDay.getEpochSecond(), credentials.getCredentials().get(0).getRedemptionTime());
+
+    final ClientZkAuthOperations clientZkAuthOperations =
+        new ClientZkAuthOperations(serverSecretParams.getPublicParams());
+
+    assertDoesNotThrow(() -> {
+      clientZkAuthOperations.receiveAuthCredentialWithPni(
+          AuthHelper.VALID_UUID,
+          AuthHelper.VALID_PNI,
+          (int) startOfDay.getEpochSecond(),
+          new AuthCredentialWithPniResponse(credentials.getCredentials().get(0).getCredential()));
+    });
+  }
+
+  @Test
+  void testGetWeekLongGroupCredentials() {
+    final Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
+
+    final GroupCredentials credentials = resources.getJerseyTest()
+        .target("/v1/certificate/auth/group")
+        .queryParam("redemptionStartSeconds", startOfDay.getEpochSecond())
+        .queryParam("redemptionEndSeconds", startOfDay.plus(Duration.ofDays(7)).getEpochSecond())
+        .request()
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+        .get(GroupCredentials.class);
+
+    assertEquals(8, credentials.getCredentials().size());
+
+    final ClientZkAuthOperations clientZkAuthOperations =
+        new ClientZkAuthOperations(serverSecretParams.getPublicParams());
+
+    for (int i = 0; i < 8; i++) {
+      final Instant redemptionTime = startOfDay.plus(Duration.ofDays(i));
+      assertEquals(redemptionTime.getEpochSecond(), credentials.getCredentials().get(i).getRedemptionTime());
+
+      final int index = i;
+
+      assertDoesNotThrow(() -> {
+        clientZkAuthOperations.receiveAuthCredentialWithPni(
+            AuthHelper.VALID_UUID,
+            AuthHelper.VALID_PNI,
+            redemptionTime.getEpochSecond(),
+            new AuthCredentialWithPniResponse(credentials.getCredentials().get(index).getCredential()));
+      });
+    }
+  }
+
+  @ParameterizedTest
+  @MethodSource
+  void testBadRedemptionTimes(final Instant redemptionStart, final Instant redemptionEnd) {
+    final Response response = resources.getJerseyTest()
+        .target("/v1/certificate/auth/group")
+        .queryParam("redemptionStartSeconds", redemptionStart.getEpochSecond())
+        .queryParam("redemptionEndSeconds", redemptionEnd.getEpochSecond())
+        .request()
+        .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+        .get();
+
+    assertEquals(400, response.getStatus());
+  }
+
+  private static Stream<Arguments> testBadRedemptionTimes() {
+    return Stream.of(
+        // Start is after end
+        Arguments.of(clock.instant().plus(Duration.ofDays(1)), clock.instant()),
+
+        // Start is in the past
+        Arguments.of(clock.instant().minus(Duration.ofDays(1)), clock.instant()),
+
+        // End is too far in the future
+        Arguments.of(clock.instant(), clock.instant().plus(CertificateController.MAX_REDEMPTION_DURATION).plus(Duration.ofDays(1))),
+
+        // Start is not at a day boundary
+        Arguments.of(clock.instant().plusSeconds(17), clock.instant().plus(Duration.ofDays(1))),
+
+        // End is not at a day boundary
+        Arguments.of(clock.instant(), clock.instant().plusSeconds(17))
+    );
   }
 }

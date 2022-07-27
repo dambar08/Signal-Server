@@ -1,17 +1,16 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013-2022 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.storage;
 
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import org.whispersystems.textsecuregcm.auth.AuthenticationCredentials;
 import org.whispersystems.textsecuregcm.entities.SignedPreKey;
 import org.whispersystems.textsecuregcm.util.Util;
-
-import javax.annotation.Nullable;
-import java.util.concurrent.TimeUnit;
 
 public class Device {
 
@@ -53,6 +52,9 @@ public class Device {
   @JsonProperty
   private SignedPreKey signedPreKey;
 
+  @JsonProperty("pniSignedPreKey")
+  private SignedPreKey phoneNumberIdentitySignedPreKey;
+
   @JsonProperty
   private long lastSeen;
 
@@ -64,32 +66,6 @@ public class Device {
 
   @JsonProperty
   private DeviceCapabilities capabilities;
-
-  public Device() {}
-
-  public Device(long id, String name, String authToken, String salt,
-                String gcmId, String apnId,
-                String voipApnId, boolean fetchesMessages,
-                int registrationId, SignedPreKey signedPreKey,
-                long lastSeen, long created, String userAgent,
-                long uninstalledFeedback, DeviceCapabilities capabilities)
-  {
-    this.id                      = id;
-    this.name                    = name;
-    this.authToken               = authToken;
-    this.salt                    = salt;
-    this.gcmId                   = gcmId;
-    this.apnId                   = apnId;
-    this.voipApnId               = voipApnId;
-    this.fetchesMessages         = fetchesMessages;
-    this.registrationId          = registrationId;
-    this.signedPreKey            = signedPreKey;
-    this.lastSeen                = lastSeen;
-    this.created                 = created;
-    this.userAgent               = userAgent;
-    this.uninstalledFeedback     = uninstalledFeedback;
-    this.capabilities            = capabilities;
-  }
 
   public String getApnId() {
     return apnId;
@@ -172,7 +148,8 @@ public class Device {
     return new AuthenticationCredentials(authToken, salt);
   }
 
-  public @Nullable DeviceCapabilities getCapabilities() {
+  @Nullable
+  public DeviceCapabilities getCapabilities() {
     return capabilities;
   }
 
@@ -186,7 +163,7 @@ public class Device {
     return (id == MASTER_ID && hasChannel && signedPreKey != null) ||
            (id != MASTER_ID && hasChannel && signedPreKey != null && lastSeen > (System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30)));
   }
-  
+
   public boolean getFetchesMessages() {
     return fetchesMessages;
   }
@@ -215,6 +192,14 @@ public class Device {
     this.signedPreKey = signedPreKey;
   }
 
+  public SignedPreKey getPhoneNumberIdentitySignedPreKey() {
+    return phoneNumberIdentitySignedPreKey;
+  }
+
+  public void setPhoneNumberIdentitySignedPreKey(final SignedPreKey phoneNumberIdentitySignedPreKey) {
+    this.phoneNumberIdentitySignedPreKey = phoneNumberIdentitySignedPreKey;
+  }
+
   public long getPushTimestamp() {
     return pushTimestamp;
   }
@@ -239,19 +224,6 @@ public class Device {
     }
 
     return groupsV2Supported;
-  }
-
-  @Override
-  public boolean equals(Object other) {
-    if (other == null || !(other instanceof Device)) return false;
-
-    Device that = (Device)other;
-    return this.id == that.id;
-  }
-
-  @Override
-  public int hashCode() {
-    return (int)this.id;
   }
 
   public static class DeviceCapabilities {
@@ -279,10 +251,24 @@ public class Device {
     @JsonProperty
     private boolean announcementGroup;
 
-    public DeviceCapabilities() {}
+    @JsonProperty
+    private boolean changeNumber;
+
+    @JsonProperty
+    private boolean pni;
+
+    @JsonProperty
+    private boolean stories;
+
+    @JsonProperty
+    private boolean giftBadges;
+
+    public DeviceCapabilities() {
+    }
 
     public DeviceCapabilities(boolean gv2, final boolean gv2_2, final boolean gv2_3, boolean storage, boolean transfer,
-        boolean gv1Migration, final boolean senderKey, final boolean announcementGroup) {
+        boolean gv1Migration, final boolean senderKey, final boolean announcementGroup, final boolean changeNumber,
+        final boolean pni, final boolean stories, final boolean giftBadges) {
       this.gv2 = gv2;
       this.gv2_2 = gv2_2;
       this.gv2_3 = gv2_3;
@@ -291,6 +277,10 @@ public class Device {
       this.gv1Migration = gv1Migration;
       this.senderKey = senderKey;
       this.announcementGroup = announcementGroup;
+      this.changeNumber = changeNumber;
+      this.pni = pni;
+      this.stories = stories;
+      this.giftBadges = giftBadges;
     }
 
     public boolean isGv2() {
@@ -323,6 +313,22 @@ public class Device {
 
     public boolean isAnnouncementGroup() {
       return announcementGroup;
+    }
+
+    public boolean isChangeNumber() {
+      return changeNumber;
+    }
+
+    public boolean isPni() {
+      return pni;
+    }
+
+    public boolean isStories() {
+      return stories;
+    }
+
+    public boolean isGiftBadges() {
+      return giftBadges;
     }
   }
 }

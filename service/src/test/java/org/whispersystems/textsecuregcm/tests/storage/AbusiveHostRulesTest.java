@@ -5,119 +5,84 @@
 
 package org.whispersystems.textsecuregcm.tests.storage;
 
-import com.opentable.db.postgres.embedded.LiquibasePreparer;
-import com.opentable.db.postgres.junit.EmbeddedPostgresRules;
-import com.opentable.db.postgres.junit.PreparedDbRule;
-import org.jdbi.v3.core.Jdbi;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.whispersystems.textsecuregcm.configuration.CircuitBreakerConfiguration;
-import org.whispersystems.textsecuregcm.storage.AbusiveHostRule;
-import org.whispersystems.textsecuregcm.storage.AbusiveHostRules;
-import org.whispersystems.textsecuregcm.storage.FaultTolerantDatabase;
-
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.Arrays;
-import java.util.List;
-
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-public class AbusiveHostRulesTest {
+import com.fasterxml.jackson.core.JsonProcessingException;
+import java.time.Duration;
+import java.time.Instant;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
+import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
+import org.whispersystems.textsecuregcm.storage.AbusiveHostRules;
+import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 
-  @Rule
-  public PreparedDbRule db = EmbeddedPostgresRules.preparedDatabase(LiquibasePreparer.forClasspathLocation("abusedb.xml"));
+class AbusiveHostRulesTest {
 
+  @RegisterExtension
+  private static final RedisClusterExtension REDIS_CLUSTER_EXTENSION = RedisClusterExtension.builder().build();
   private AbusiveHostRules abusiveHostRules;
+  private DynamicConfigurationManager<DynamicConfiguration> mockDynamicConfigManager;
 
-  @Before
-  public void setup() {
-    this.abusiveHostRules = new AbusiveHostRules(new FaultTolerantDatabase("abusive_hosts-test", Jdbi.create(db.getTestDatabase()), new CircuitBreakerConfiguration()));
+  @BeforeEach
+  void setup() throws JsonProcessingException {
+    @SuppressWarnings("unchecked")
+    DynamicConfigurationManager<DynamicConfiguration> m = mock(DynamicConfigurationManager.class);
+    this.mockDynamicConfigManager = m;
+    when(mockDynamicConfigManager.getConfiguration()).thenReturn(generateConfig(Duration.ofHours(1)));
+    this.abusiveHostRules = new AbusiveHostRules(REDIS_CLUSTER_EXTENSION.getRedisCluster(), mockDynamicConfigManager);
+  }
+
+  DynamicConfiguration generateConfig(Duration expireDuration) throws JsonProcessingException {
+    final String configString = String.format("""
+        captcha:
+          scoreFloor: 1.0
+        abusiveHostRules:
+          expirationTime: %s
+         """, expireDuration);
+    return DynamicConfigurationManager
+        .parseConfiguration(configString, DynamicConfiguration.class)
+        .orElseThrow();
   }
 
   @Test
-  public void testBlockedHost() throws SQLException {
-    PreparedStatement statement = db.getTestDatabase().getConnection().prepareStatement("INSERT INTO abusive_host_rules (host, blocked) VALUES (?::INET, ?)");
-    statement.setString(1, "192.168.1.1");
-    statement.setInt(2, 1);
-    statement.execute();
-
-    List<AbusiveHostRule> rules = abusiveHostRules.getAbusiveHostRulesFor("192.168.1.1");
-    assertThat(rules.size()).isEqualTo(1);
-    assertThat(rules.get(0).getRegions().isEmpty()).isTrue();
-    assertThat(rules.get(0).getHost()).isEqualTo("192.168.1.1");
-    assertThat(rules.get(0).isBlocked()).isTrue();
+  void testBlockedHost() {
+    REDIS_CLUSTER_EXTENSION.getRedisCluster().useCluster(connection ->
+        connection.sync().set(AbusiveHostRules.prefix("192.168.1.1"), "1"));
+    assertThat(abusiveHostRules.isBlocked("192.168.1.1")).isTrue();
   }
 
   @Test
-  public void testBlockedCidr() throws SQLException {
-    PreparedStatement statement = db.getTestDatabase().getConnection().prepareStatement("INSERT INTO abusive_host_rules (host, blocked) VALUES (?::INET, ?)");
-    statement.setString(1, "192.168.1.0/24");
-    statement.setInt(2, 1);
-    statement.execute();
-
-    List<AbusiveHostRule> rules = abusiveHostRules.getAbusiveHostRulesFor("192.168.1.1");
-    assertThat(rules.size()).isEqualTo(1);
-    assertThat(rules.get(0).getRegions().isEmpty()).isTrue();
-    assertThat(rules.get(0).getHost()).isEqualTo("192.168.1.0/24");
-    assertThat(rules.get(0).isBlocked()).isTrue();
+  void testUnblocked() {
+    REDIS_CLUSTER_EXTENSION.getRedisCluster().useCluster(connection ->
+        connection.sync().set(AbusiveHostRules.prefix("192.168.1.1"), "1"));
+    assertThat(abusiveHostRules.isBlocked("172.17.1.1")).isFalse();
   }
 
   @Test
-  public void testUnblocked() throws SQLException {
-    PreparedStatement statement = db.getTestDatabase().getConnection().prepareStatement("INSERT INTO abusive_host_rules (host, blocked) VALUES (?::INET, ?)");
-    statement.setString(1, "192.168.1.0/24");
-    statement.setInt(2, 1);
-    statement.execute();
-
-    List<AbusiveHostRule> rules = abusiveHostRules.getAbusiveHostRulesFor("172.17.1.1");
-    assertThat(rules.isEmpty()).isTrue();
+  void testInsertBlocked() {
+    abusiveHostRules.setBlockedHost("172.17.0.1");
+    assertThat(abusiveHostRules.isBlocked("172.17.0.1")).isTrue();
+    abusiveHostRules.setBlockedHost("172.17.0.1");
+    assertThat(abusiveHostRules.isBlocked("172.17.0.1")).isTrue();
   }
 
   @Test
-  public void testRestricted() throws SQLException {
-    PreparedStatement statement = db.getTestDatabase().getConnection().prepareStatement("INSERT INTO abusive_host_rules (host, blocked, regions) VALUES (?::INET, ?, ?)");
-    statement.setString(1, "192.168.1.0/24");
-    statement.setInt(2, 0);
-    statement.setString(3, "+1,+49");
-    statement.execute();
-
-    List<AbusiveHostRule> rules = abusiveHostRules.getAbusiveHostRulesFor("192.168.1.100");
-    assertThat(rules.size()).isEqualTo(1);
-    assertThat(rules.get(0).isBlocked()).isFalse();
-    assertThat(rules.get(0).getRegions()).isEqualTo(Arrays.asList("+1", "+49"));
-  }
-
-  @Test
-  public void testInsertBlocked() throws Exception {
-    abusiveHostRules.setBlockedHost("172.17.0.1", "Testing one two");
-
-    PreparedStatement statement = db.getTestDatabase().getConnection().prepareStatement("SELECT * from abusive_host_rules WHERE host = ?::inet");
-    statement.setString(1, "172.17.0.1");
-
-    ResultSet resultSet = statement.executeQuery();
-
-    assertThat(resultSet.next()).isTrue();
-
-    assertThat(resultSet.getInt("blocked")).isEqualTo(1);
-    assertThat(resultSet.getString("regions")).isNullOrEmpty();
-    assertThat(resultSet.getString("notes")).isEqualTo("Testing one two");
-
-    abusiveHostRules.setBlockedHost("172.17.0.1", "Different notes");
-
-
-    statement = db.getTestDatabase().getConnection().prepareStatement("SELECT * from abusive_host_rules WHERE host = ?::inet");
-    statement.setString(1, "172.17.0.1");
-
-    resultSet = statement.executeQuery();
-
-    assertThat(resultSet.next()).isTrue();
-
-    assertThat(resultSet.getInt("blocked")).isEqualTo(1);
-    assertThat(resultSet.getString("regions")).isNullOrEmpty();
-    assertThat(resultSet.getString("notes")).isEqualTo("Testing one two");
+ void testExpiration() throws Exception {
+    when(mockDynamicConfigManager.getConfiguration()).thenReturn(generateConfig(Duration.ofSeconds(1)));
+    abusiveHostRules.setBlockedHost("192.168.1.1");
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+      while (true) {
+        if (!abusiveHostRules.isBlocked("192.168.1.1")) {
+          break;
+        }
+      }
+    });
   }
 
 }

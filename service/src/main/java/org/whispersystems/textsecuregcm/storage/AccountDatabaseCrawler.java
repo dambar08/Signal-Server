@@ -4,55 +4,59 @@
  */
 package org.whispersystems.textsecuregcm.storage;
 
+import static com.codahale.metrics.MetricRegistry.name;
+
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.SharedMetricRegistries;
 import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
+import io.dropwizard.lifecycle.Managed;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.util.Constants;
 import org.whispersystems.textsecuregcm.util.Util;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-import static com.codahale.metrics.MetricRegistry.name;
-import io.dropwizard.lifecycle.Managed;
-
 @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
 public class AccountDatabaseCrawler implements Managed, Runnable {
 
-  private static final Logger         logger         = LoggerFactory.getLogger(AccountDatabaseCrawler.class);
+  private static final Logger logger = LoggerFactory.getLogger(AccountDatabaseCrawler.class);
   private static final MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
-  private static final Timer          readChunkTimer = metricRegistry.timer(name(AccountDatabaseCrawler.class, "readChunk"));
+  private static final Timer readChunkTimer = metricRegistry.timer(name(AccountDatabaseCrawler.class, "readChunk"));
+  private static final Timer processChunkTimer = metricRegistry.timer(
+      name(AccountDatabaseCrawler.class, "processChunk"));
 
-  private static final long   WORKER_TTL_MS              = 120_000L;
-  private static final long   ACCELERATED_CHUNK_INTERVAL = 10L;
+  private static final long WORKER_TTL_MS = 120_000L;
+  private static final long ACCELERATED_CHUNK_INTERVAL = 10L;
 
-  private final AccountsManager                      accounts;
-  private final int                                  chunkSize;
-  private final long                                 chunkIntervalMs;
-  private final String                               workerId;
-  private final AccountDatabaseCrawlerCache          cache;
+  private final String name;
+  private final AccountsManager accounts;
+  private final int chunkSize;
+  private final long chunkIntervalMs;
+  private final String workerId;
+  private final AccountDatabaseCrawlerCache cache;
   private final List<AccountDatabaseCrawlerListener> listeners;
 
   private AtomicBoolean running = new AtomicBoolean(false);
   private boolean finished;
 
-  public AccountDatabaseCrawler(AccountsManager accounts,
-                                AccountDatabaseCrawlerCache cache,
-                                List<AccountDatabaseCrawlerListener> listeners,
-                                int chunkSize,
-                                long chunkIntervalMs)
-  {
-    this.accounts             = accounts;
-    this.chunkSize            = chunkSize;
-    this.chunkIntervalMs      = chunkIntervalMs;
-    this.workerId             = UUID.randomUUID().toString();
-    this.cache                = cache;
-    this.listeners            = listeners;
+  public AccountDatabaseCrawler(final String name,
+      AccountsManager accounts,
+      AccountDatabaseCrawlerCache cache,
+      List<AccountDatabaseCrawlerListener> listeners,
+      int chunkSize,
+      long chunkIntervalMs) {
+    this.name = name;
+    this.accounts = accounts;
+    this.chunkSize = chunkSize;
+    this.chunkIntervalMs = chunkIntervalMs;
+    this.workerId = UUID.randomUUID().toString();
+    this.cache = cache;
+    this.listeners = listeners;
+
   }
 
   @Override
@@ -79,7 +83,7 @@ public class AccountDatabaseCrawler implements Managed, Runnable {
         accelerated = doPeriodicWork();
         sleepWhileRunning(accelerated ? ACCELERATED_CHUNK_INTERVAL : chunkIntervalMs);
       } catch (Throwable t) {
-        logger.warn("error in database crawl: {}: {}", t.getClass().getSimpleName(), t.getMessage(), t);
+        logger.warn("{}: error in database crawl: {}: {}", name, t.getClass().getSimpleName(), t.getMessage(), t);
         Util.sleep(10000);
       }
     }
@@ -93,15 +97,19 @@ public class AccountDatabaseCrawler implements Managed, Runnable {
   @VisibleForTesting
   public boolean doPeriodicWork() {
     if (cache.claimActiveWork(workerId, WORKER_TTL_MS)) {
+
       try {
-        long startTimeMs = System.currentTimeMillis();
+        final long startTimeMs = System.currentTimeMillis();
         processChunk();
         if (cache.isAccelerated()) {
           return true;
         }
-        long endTimeMs = System.currentTimeMillis();
-        long sleepIntervalMs = chunkIntervalMs - (endTimeMs - startTimeMs);
-        if (sleepIntervalMs > 0) sleepWhileRunning(sleepIntervalMs);
+        final long endTimeMs = System.currentTimeMillis();
+        final long sleepIntervalMs = chunkIntervalMs - (endTimeMs - startTimeMs);
+        if (sleepIntervalMs > 0) {
+          logger.debug("{}: Sleeping {}ms", name, sleepIntervalMs);
+          sleepWhileRunning(sleepIntervalMs);
+        }
       } finally {
         cache.releaseActiveWork(workerId);
       }
@@ -110,47 +118,65 @@ public class AccountDatabaseCrawler implements Managed, Runnable {
   }
 
   private void processChunk() {
-    Optional<UUID> fromUuid = cache.getLastUuid();
 
-    if (!fromUuid.isPresent()) {
-      listeners.forEach(AccountDatabaseCrawlerListener::onCrawlStart);
-    }
+    try (Timer.Context timer = processChunkTimer.time()) {
 
-    List<Account> chunkAccounts = readChunk(fromUuid, chunkSize);
+      final Optional<UUID> fromUuid = getLastUuid();
 
-    if (chunkAccounts.isEmpty()) {
-      logger.info("Finished crawl");
-      listeners.forEach(listener -> listener.onCrawlEnd(fromUuid));
-      cache.setLastUuid(Optional.empty());
-      cache.setAccelerated(false);
-    } else {
-      try {
-        for (AccountDatabaseCrawlerListener listener : listeners) {
-          listener.timeAndProcessCrawlChunk(fromUuid, chunkAccounts);
-        }
-        cache.setLastUuid(Optional.of(chunkAccounts.get(chunkAccounts.size() - 1).getUuid()));
-      } catch (AccountDatabaseCrawlerRestartException e) {
-        cache.setLastUuid(Optional.empty());
-        cache.setAccelerated(false);
+      if (fromUuid.isEmpty()) {
+        logger.info("{}: Started crawl", name);
+        listeners.forEach(AccountDatabaseCrawlerListener::onCrawlStart);
       }
 
-    }
+      final AccountCrawlChunk chunkAccounts = readChunk(fromUuid, chunkSize);
 
+      if (chunkAccounts.getAccounts().isEmpty()) {
+        logger.info("{}: Finished crawl", name);
+        listeners.forEach(listener -> listener.onCrawlEnd(fromUuid));
+        cacheLastUuid(Optional.empty());
+        cache.setAccelerated(false);
+      } else {
+        logger.debug("{}: Processing chunk", name);
+        try {
+          for (AccountDatabaseCrawlerListener listener : listeners) {
+            listener.timeAndProcessCrawlChunk(fromUuid, chunkAccounts.getAccounts());
+          }
+          cacheLastUuid(chunkAccounts.getLastUuid());
+        } catch (AccountDatabaseCrawlerRestartException e) {
+          cacheLastUuid(Optional.empty());
+          cache.setAccelerated(false);
+        }
+      }
+    }
   }
 
-  private List<Account> readChunk(Optional<UUID> fromUuid, int chunkSize) {
-    try (Timer.Context timer = readChunkTimer.time()) {
+  private AccountCrawlChunk readChunk(Optional<UUID> fromUuid, int chunkSize) {
+    return readChunk(fromUuid, chunkSize, readChunkTimer);
+  }
+
+  private AccountCrawlChunk readChunk(Optional<UUID> fromUuid, int chunkSize, Timer readTimer) {
+    try (Timer.Context timer = readTimer.time()) {
 
       if (fromUuid.isPresent()) {
-        return accounts.getAllFrom(fromUuid.get(), chunkSize);
+        return accounts.getAllFromDynamo(fromUuid.get(), chunkSize);
       }
 
-      return accounts.getAllFrom(chunkSize);
+      return accounts.getAllFromDynamo(chunkSize);
     }
+  }
+
+  private Optional<UUID> getLastUuid() {
+    return cache.getLastUuidDynamo();
+  }
+
+  private void cacheLastUuid(final Optional<UUID> lastUuid) {
+    cache.setLastUuidDynamo(lastUuid);
   }
 
   private synchronized void sleepWhileRunning(long delayMs) {
-    if (running.get()) Util.wait(this, delayMs);
+    if (running.get()) {
+      Util.wait(this, delayMs);
+    }
   }
 
 }

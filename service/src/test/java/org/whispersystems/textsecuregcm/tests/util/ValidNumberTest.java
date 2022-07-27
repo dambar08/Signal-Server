@@ -5,48 +5,62 @@
 
 package org.whispersystems.textsecuregcm.tests.util;
 
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.whispersystems.textsecuregcm.util.ImpossiblePhoneNumberException;
+import org.whispersystems.textsecuregcm.util.NonNormalizedPhoneNumberException;
 import org.whispersystems.textsecuregcm.util.Util;
 
-import static junit.framework.TestCase.assertTrue;
-import static org.junit.Assert.assertFalse;
+class ValidNumberTest {
 
-public class ValidNumberTest {
-
-  @Test
-  public void testValidE164() {
-    assertTrue(Util.isValidNumber("+14151231234"));
-    assertTrue(Util.isValidNumber("+71234567890"));
-    assertTrue(Util.isValidNumber("+447535742222"));
-    assertTrue(Util.isValidNumber("+4915174108888"));
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "+447700900111",
+      "+14151231234",
+      "+71234567890",
+      "+447535742222",
+      "+4915174108888",
+      "+298123456",
+      "+299123456",
+      "+376123456",
+      "+68512345",
+      "+689123456"})
+  void requireNormalizedNumber(final String number) {
+    assertDoesNotThrow(() -> Util.requireNormalizedNumber(number));
   }
 
   @Test
-  public void testInvalidE164() {
-    assertFalse(Util.isValidNumber("+141512312341"));
-    assertFalse(Util.isValidNumber("+712345678901"));
-    assertFalse(Util.isValidNumber("+4475357422221"));
-    assertFalse(Util.isValidNumber("+491517410888811111"));
+  void requireNormalizedNumberNull() {
+    assertThrows(ImpossiblePhoneNumberException.class, () -> Util.requireNormalizedNumber(null));
   }
 
-  @Test
-  public void testNotE164() {
-    assertFalse(Util.isValidNumber("+1 415 123 1234"));
-    assertFalse(Util.isValidNumber("+1 (415) 123-1234"));
-    assertFalse(Util.isValidNumber("+1 415)123-1234"));
-    assertFalse(Util.isValidNumber("71234567890"));
-    assertFalse(Util.isValidNumber("001447535742222"));
-    assertFalse(Util.isValidNumber(" +14151231234"));
-    assertFalse(Util.isValidNumber("+1415123123a"));
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "Definitely not a phone number at all",
+      "+141512312341",
+      "+712345678901",
+      "+4475357422221",
+      "+491517410888811111",
+      "71234567890",
+      "001447535742222",
+      "+1415123123a"
+  })
+  void requireNormalizedNumberImpossibleNumber(final String number) {
+    assertThrows(ImpossiblePhoneNumberException.class, () -> Util.requireNormalizedNumber(number));
   }
 
-  @Test
-  public void testShortRegions() {
-    assertTrue(Util.isValidNumber("+298123456"));
-    assertTrue(Util.isValidNumber("+299123456"));
-    assertTrue(Util.isValidNumber("+376123456"));
-    assertTrue(Util.isValidNumber("+68512345"));
-    assertTrue(Util.isValidNumber("+689123456"));
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "+4407700900111",
+      "+1 415 123 1234",
+      "+1 (415) 123-1234",
+      "+1 415)123-1234",
+      " +14151231234"})
+  void requireNormalizedNumberNonNormalized(final String number) {
+    assertThrows(NonNormalizedPhoneNumberException.class, () -> Util.requireNormalizedNumber(number));
   }
-
 }

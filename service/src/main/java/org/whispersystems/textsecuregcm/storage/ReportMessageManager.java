@@ -1,56 +1,110 @@
+/*
+ * Copyright 2021-2022 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 package org.whispersystems.textsecuregcm.storage;
 
-import static com.codahale.metrics.MetricRegistry.name;
-
-import com.google.common.annotations.VisibleForTesting;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
+import io.lettuce.core.RedisException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
 import org.whispersystems.textsecuregcm.util.UUIDUtil;
-import org.whispersystems.textsecuregcm.util.Util;
 
 public class ReportMessageManager {
 
-  @VisibleForTesting
-  static final String REPORT_COUNTER_NAME = name(ReportMessageManager.class, "reported");
-
   private final ReportMessageDynamoDb reportMessageDynamoDb;
-  private final MeterRegistry meterRegistry;
+  private final FaultTolerantRedisCluster rateLimitCluster;
+
+  private final Duration counterTtl;
+
+  private final List<ReportedMessageListener> reportedMessageListeners = new ArrayList<>();
 
   private static final Logger logger = LoggerFactory.getLogger(ReportMessageManager.class);
 
-  public ReportMessageManager(ReportMessageDynamoDb reportMessageDynamoDb, final MeterRegistry meterRegistry) {
+  public ReportMessageManager(final ReportMessageDynamoDb reportMessageDynamoDb,
+      final FaultTolerantRedisCluster rateLimitCluster,
+      final Duration counterTtl) {
 
     this.reportMessageDynamoDb = reportMessageDynamoDb;
-    this.meterRegistry = meterRegistry;
+    this.rateLimitCluster = rateLimitCluster;
+
+    this.counterTtl = counterTtl;
   }
 
-  public void store(String sourceNumber, UUID messageGuid) {
+  public void addListener(final ReportedMessageListener listener) {
+    this.reportedMessageListeners.add(listener);
+  }
+
+  public void store(String sourceAci, UUID messageGuid) {
 
     try {
-      Objects.requireNonNull(sourceNumber);
+      Objects.requireNonNull(sourceAci);
 
-      reportMessageDynamoDb.store(hash(messageGuid, sourceNumber));
+      reportMessageDynamoDb.store(hash(messageGuid, sourceAci));
     } catch (final Exception e) {
       logger.warn("Failed to store hash", e);
     }
   }
 
-  public void report(String sourceNumber, UUID messageGuid) {
+  public void report(Optional<String> sourceNumber, Optional<UUID> sourceAci, Optional<UUID> sourcePni,
+      UUID messageGuid, UUID reporterUuid) {
 
-    final boolean found = reportMessageDynamoDb.remove(hash(messageGuid, sourceNumber));
+    final boolean found = sourceAci.map(uuid -> reportMessageDynamoDb.remove(hash(messageGuid, uuid.toString())))
+        .orElse(false);
 
     if (found) {
-      Counter.builder(REPORT_COUNTER_NAME)
-          .tag("countryCode", Util.getCountryCode(sourceNumber))
-          .register(meterRegistry)
-          .increment();
+      rateLimitCluster.useCluster(connection -> {
+        sourcePni.ifPresent(pni -> {
+          final String reportedSenderKey = getReportedSenderPniKey(pni);
+          connection.sync().pfadd(reportedSenderKey, reporterUuid.toString());
+          connection.sync().expire(reportedSenderKey, counterTtl.toSeconds());
+        });
+
+        sourceAci.ifPresent(aci -> {
+          final String reportedSenderKey = getReportedSenderAciKey(aci);
+          connection.sync().pfadd(reportedSenderKey, reporterUuid.toString());
+          connection.sync().expire(reportedSenderKey, counterTtl.toSeconds());
+        });
+      });
+
+      sourceNumber.ifPresent(number ->
+          reportedMessageListeners.forEach(listener -> {
+            try {
+              listener.handleMessageReported(number, messageGuid, reporterUuid);
+            } catch (final Exception e) {
+              logger.error("Failed to notify listener of reported message", e);
+            }
+          }));
+    }
+  }
+
+  /**
+   * Returns the number of times messages from the given account have been reported by recipients as abusive. Note that
+   * this method makes a call to an external service, and callers should take care to memoize calls where possible and
+   * avoid unnecessary calls.
+   *
+   * @param account the account to check for recent reports
+   * @return the number of times the given number has been reported recently
+   */
+  public int getRecentReportCount(final Account account) {
+    try {
+      return rateLimitCluster.withCluster(
+          connection ->
+              Math.max(
+                  connection.sync().pfcount(getReportedSenderPniKey(account.getPhoneNumberIdentifier())).intValue(),
+                  connection.sync().pfcount(getReportedSenderAciKey(account.getUuid())).intValue()));
+    } catch (final RedisException e) {
+      return 0;
     }
   }
 
@@ -66,5 +120,13 @@ public class ReportMessageManager {
     sha256.update(otherId.getBytes(StandardCharsets.UTF_8));
 
     return sha256.digest();
+  }
+
+  private static String getReportedSenderAciKey(final UUID aci) {
+    return "reported_account::" + aci.toString();
+  }
+
+  private static String getReportedSenderPniKey(final UUID pni) {
+    return "reported_pni::" + pni.toString();
   }
 }
