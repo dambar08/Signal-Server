@@ -32,7 +32,6 @@ message Envelope {
   }
 
   optional Type   type = 1;
-  optional string source = 2;
   optional string source_uuid = 11;
   optional uint32 source_device = 7;
   optional uint64 timestamp = 5;
@@ -41,6 +40,9 @@ message Envelope {
   optional uint64 server_timestamp = 10;
   optional bool ephemeral = 12; // indicates that the message should not be persisted if the recipient is offline
   optional string destination_uuid = 13;
+  optional bool urgent = 14 [default=true];
+  optional string updated_pni = 15;
+  // next: 16
 }
 
 message ProvisioningUuid {

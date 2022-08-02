@@ -13,9 +13,9 @@ import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.SharedMetricRegistries;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.ByteString;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Tags;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -33,15 +33,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import javax.ws.rs.WebApplicationException;
-import io.micrometer.core.instrument.Tags;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
 import org.whispersystems.textsecuregcm.controllers.MessageController;
 import org.whispersystems.textsecuregcm.controllers.NoSuchUserException;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntityList;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.push.DisplacedPresenceListener;
 import org.whispersystems.textsecuregcm.push.ReceiptSender;
@@ -49,8 +46,8 @@ import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.MessageAvailabilityListener;
 import org.whispersystems.textsecuregcm.storage.MessagesManager;
 import org.whispersystems.textsecuregcm.util.Constants;
+import org.whispersystems.textsecuregcm.util.Pair;
 import org.whispersystems.textsecuregcm.util.TimestampHeaderUtil;
-import org.whispersystems.textsecuregcm.util.Util;
 import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
 import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
@@ -60,24 +57,33 @@ import org.whispersystems.websocket.messages.WebSocketResponseMessage;
 @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
 public class WebSocketConnection implements MessageAvailabilityListener, DisplacedPresenceListener {
 
-  private static final MetricRegistry metricRegistry                 = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
-  private static final Histogram      messageTime                    = metricRegistry.histogram(name(MessageController.class, "message_delivery_duration"));
-  private static final Histogram      primaryDeviceMessageTime       = metricRegistry.histogram(name(MessageController.class, "primary_device_message_delivery_duration"));
-  private static final Meter          sendMessageMeter               = metricRegistry.meter(name(WebSocketConnection.class, "send_message"));
-  private static final Meter          messageAvailableMeter          = metricRegistry.meter(name(WebSocketConnection.class, "messagesAvailable"));
-  private static final Meter          messagesPersistedMeter         = metricRegistry.meter(name(WebSocketConnection.class, "messagesPersisted"));
-  private static final Meter          bytesSentMeter                 = metricRegistry.meter(name(WebSocketConnection.class, "bytes_sent"));
-  private static final Meter          sendFailuresMeter              = metricRegistry.meter(name(WebSocketConnection.class, "send_failures"));
-  private static final Meter          discardedMessagesMeter         = metricRegistry.meter(name(WebSocketConnection.class, "discardedMessages"));
+  private static final MetricRegistry metricRegistry = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
+  private static final Histogram messageTime = metricRegistry.histogram(
+      name(MessageController.class, "message_delivery_duration"));
+  private static final Histogram primaryDeviceMessageTime = metricRegistry.histogram(
+      name(MessageController.class, "primary_device_message_delivery_duration"));
+  private static final Meter sendMessageMeter = metricRegistry.meter(name(WebSocketConnection.class, "send_message"));
+  private static final Meter messageAvailableMeter = metricRegistry.meter(
+      name(WebSocketConnection.class, "messagesAvailable"));
+  private static final Meter messagesPersistedMeter = metricRegistry.meter(
+      name(WebSocketConnection.class, "messagesPersisted"));
+  private static final Meter bytesSentMeter = metricRegistry.meter(name(WebSocketConnection.class, "bytes_sent"));
+  private static final Meter sendFailuresMeter = metricRegistry.meter(name(WebSocketConnection.class, "send_failures"));
+  private static final Meter discardedMessagesMeter = metricRegistry.meter(
+      name(WebSocketConnection.class, "discardedMessages"));
 
-  private static final String INITIAL_QUEUE_LENGTH_DISTRIBUTION_NAME = name(WebSocketConnection.class, "initialQueueLength");
-  private static final String INITIAL_QUEUE_DRAIN_TIMER_NAME         = name(WebSocketConnection.class, "drainInitialQueue");
-  private static final String SLOW_QUEUE_DRAIN_COUNTER_NAME          = name(WebSocketConnection.class, "slowQueueDrain");
-  private static final String QUEUE_DRAIN_RETRY_COUNTER_NAME         = name(WebSocketConnection.class, "queueDrainRetry");
-  private static final String DISPLACEMENT_COUNTER_NAME              = name(WebSocketConnection.class, "displacement");
-  private static final String NON_SUCCESS_RESPONSE_COUNTER_NAME      = name(WebSocketConnection.class, "clientNonSuccessResponse");
-  private static final String STATUS_CODE_TAG                        = "status";
-  private static final String STATUS_MESSAGE_TAG                     = "message";
+  private static final String INITIAL_QUEUE_LENGTH_DISTRIBUTION_NAME = name(WebSocketConnection.class,
+      "initialQueueLength");
+  private static final String INITIAL_QUEUE_DRAIN_TIMER_NAME = name(WebSocketConnection.class, "drainInitialQueue");
+  private static final String SLOW_QUEUE_DRAIN_COUNTER_NAME = name(WebSocketConnection.class, "slowQueueDrain");
+  private static final String QUEUE_DRAIN_RETRY_COUNTER_NAME = name(WebSocketConnection.class, "queueDrainRetry");
+  private static final String DISPLACEMENT_COUNTER_NAME = name(WebSocketConnection.class, "displacement");
+  private static final String NON_SUCCESS_RESPONSE_COUNTER_NAME = name(WebSocketConnection.class,
+      "clientNonSuccessResponse");
+  private static final String CLIENT_CLOSED_MESSAGE_AVAILABLE_COUNTER_NAME = name(WebSocketConnection.class,
+      "messageAvailableAfterClientClosed");
+  private static final String STATUS_CODE_TAG = "status";
+  private static final String STATUS_MESSAGE_TAG = "message";
 
   private static final long SLOW_DRAIN_THRESHOLD = 10_000;
 
@@ -229,10 +235,14 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
   }
 
   private void sendDeliveryReceiptFor(Envelope message) {
-    if (!message.hasSource()) return;
+    if (!message.hasSourceUuid()) {
+      return;
+    }
 
     try {
-      receiptSender.sendReceipt(auth, UUID.fromString(message.getSourceUuid()), message.getTimestamp());
+      receiptSender.sendReceipt(UUID.fromString(message.getDestinationUuid()),
+          auth.getAuthenticatedDevice().getId(), UUID.fromString(message.getSourceUuid()),
+          message.getTimestamp());
     } catch (NoSuchUserException e) {
       logger.info("No longer registered: {}", e.getMessage());
     } catch (WebApplicationException e) {
@@ -284,11 +294,12 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
           }
         } else {
           if (client.isOpen()) {
-            logger.debug("Failed to clear queue", cause);
 
             if (consecutiveRetries.incrementAndGet() > MAX_CONSECUTIVE_RETRIES) {
+              logger.warn("Max consecutive retries exceeded", cause);
               client.close(1011, "Failed to retrieve messages");
             } else {
+              logger.debug("Failed to clear queue", cause);
               final List<Tag> tags = List.of(UserAgentTagUtil.getPlatformTag(client.getUserAgent()));
 
               Metrics.counter(QUEUE_DRAIN_RETRY_COUNTER_NAME, tags).increment();
@@ -307,43 +318,25 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
 
   private void sendNextMessagePage(final boolean cachedMessagesOnly, final CompletableFuture<Void> queueClearedFuture) {
     try {
-      final OutgoingMessageEntityList messages = messagesManager
+      final Pair<List<Envelope>, Boolean> messagesAndHasMore = messagesManager
           .getMessagesForDevice(auth.getAccount().getUuid(), device.getId(), client.getUserAgent(), cachedMessagesOnly);
 
-      final CompletableFuture<?>[] sendFutures = new CompletableFuture[messages.getMessages().size()];
+      final List<Envelope> messages = messagesAndHasMore.first();
+      final boolean hasMore = messagesAndHasMore.second();
 
-      for (int i = 0; i < messages.getMessages().size(); i++) {
-        final OutgoingMessageEntity message = messages.getMessages().get(i);
-        final Envelope.Builder builder = Envelope.newBuilder()
-            .setType(Envelope.Type.forNumber(message.getType()))
-            .setTimestamp(message.getTimestamp())
-            .setServerTimestamp(message.getServerTimestamp());
+      final CompletableFuture<?>[] sendFutures = new CompletableFuture[messages.size()];
 
-        if (!Util.isEmpty(message.getSource())) {
-          builder.setSource(message.getSource())
-              .setSourceDevice(message.getSourceDevice());
-          if (message.getSourceUuid() != null) {
-            builder.setSourceUuid(message.getSourceUuid().toString());
-          }
-        }
-
-        if (message.getContent() != null) {
-          builder.setContent(ByteString.copyFrom(message.getContent()));
-        }
-
-        builder.setDestinationUuid(message.getDestinationUuid().toString());
-
-        builder.setServerGuid(message.getGuid().toString());
-
-        final Envelope envelope = builder.build();
+      for (int i = 0; i < messages.size(); i++) {
+        final Envelope envelope = messages.get(i);
+        final UUID messageGuid = UUID.fromString(envelope.getServerGuid());
 
         if (envelope.getSerializedSize() > MAX_DESKTOP_MESSAGE_SIZE && isDesktopClient) {
-          messagesManager.delete(auth.getAccount().getUuid(), device.getId(), message.getGuid(), message.getServerTimestamp());
+          messagesManager.delete(auth.getAccount().getUuid(), device.getId(), messageGuid, envelope.getServerTimestamp());
           discardedMessagesMeter.mark();
 
           sendFutures[i] = CompletableFuture.completedFuture(null);
         } else {
-          sendFutures[i] = sendMessage(builder.build(), Optional.of(new StoredMessageInfo(message.getGuid(), message.getServerTimestamp())));
+          sendFutures[i] = sendMessage(envelope, Optional.of(new StoredMessageInfo(messageGuid, envelope.getServerTimestamp())));
         }
       }
 
@@ -352,7 +345,7 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
           .orTimeout(sendFuturesTimeoutMillis, TimeUnit.MILLISECONDS)
           .whenComplete((v, cause) -> {
             if (cause == null) {
-              if (messages.hasMore()) {
+              if (hasMore) {
                 sendNextMessagePage(cachedMessagesOnly, queueClearedFuture);
               } else {
                 queueClearedFuture.complete(null);
@@ -367,19 +360,34 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
   }
 
   @Override
-  public void handleNewMessagesAvailable() {
+  public boolean handleNewMessagesAvailable() {
+    if (!client.isOpen()) {
+      // The client may become closed without successful removal of references to the `MessageAvailabilityListener`
+      Metrics.counter(CLIENT_CLOSED_MESSAGE_AVAILABLE_COUNTER_NAME).increment();
+      return false;
+    }
+
     messageAvailableMeter.mark();
 
     storedMessageState.compareAndSet(StoredMessageState.EMPTY, StoredMessageState.CACHED_NEW_MESSAGES_AVAILABLE);
     processStoredMessages();
+
+    return true;
   }
 
   @Override
-  public void handleMessagesPersisted() {
+  public boolean handleMessagesPersisted() {
+    if (!client.isOpen()) {
+      // The client may become without successful removal of references to the `MessageAvailabilityListener`
+      Metrics.counter(CLIENT_CLOSED_MESSAGE_AVAILABLE_COUNTER_NAME).increment();
+      return false;
+    }
     messagesPersistedMeter.mark();
 
     storedMessageState.set(StoredMessageState.PERSISTED_NEW_MESSAGES_AVAILABLE);
     processStoredMessages();
+
+    return true;
   }
 
   @Override
@@ -388,7 +396,7 @@ public class WebSocketConnection implements MessageAvailabilityListener, Displac
         UserAgentTagUtil.getPlatformTag(client.getUserAgent()),
         Tag.of("connectedElsewhere", String.valueOf(connectedElsewhere)));
 
-    Metrics.counter(DISPLACEMENT_COUNTER_NAME, tags);
+    Metrics.counter(DISPLACEMENT_COUNTER_NAME, tags).increment();
 
     final int code;
     final String message;

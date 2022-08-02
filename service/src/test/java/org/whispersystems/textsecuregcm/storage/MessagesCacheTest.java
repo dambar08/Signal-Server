@@ -21,10 +21,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -34,7 +36,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 
 class MessagesCacheTest {
@@ -103,11 +104,10 @@ class MessagesCacheTest {
     final MessageProtos.Envelope message = generateRandomMessage(messageGuid, sealedSender);
 
     messagesCache.insert(messageGuid, DESTINATION_UUID, DESTINATION_DEVICE_ID, message);
-    final Optional<OutgoingMessageEntity> maybeRemovedMessage = messagesCache.remove(DESTINATION_UUID,
+    final Optional<MessageProtos.Envelope> maybeRemovedMessage = messagesCache.remove(DESTINATION_UUID,
         DESTINATION_DEVICE_ID, messageGuid);
 
-    assertTrue(maybeRemovedMessage.isPresent());
-    assertEquals(MessagesCache.constructEntityFromEnvelope(message), maybeRemovedMessage.get());
+    assertEquals(Optional.of(message), maybeRemovedMessage);
   }
 
   @ParameterizedTest
@@ -135,14 +135,11 @@ class MessagesCacheTest {
       messagesCache.insert(UUID.fromString(message.getServerGuid()), DESTINATION_UUID, DESTINATION_DEVICE_ID, message);
     }
 
-    final List<OutgoingMessageEntity> removedMessages = messagesCache.remove(DESTINATION_UUID, DESTINATION_DEVICE_ID,
+    final List<MessageProtos.Envelope> removedMessages = messagesCache.remove(DESTINATION_UUID, DESTINATION_DEVICE_ID,
         messagesToRemove.stream().map(message -> UUID.fromString(message.getServerGuid()))
             .collect(Collectors.toList()));
 
-    assertEquals(messagesToRemove.stream().map(MessagesCache::constructEntityFromEnvelope)
-            .collect(Collectors.toList()),
-        removedMessages);
-
+    assertEquals(messagesToRemove, removedMessages);
     assertEquals(messagesToPreserve,
         messagesCache.getMessagesToPersist(DESTINATION_UUID, DESTINATION_DEVICE_ID, messageCount));
   }
@@ -163,14 +160,14 @@ class MessagesCacheTest {
   void testGetMessages(final boolean sealedSender) {
     final int messageCount = 100;
 
-    final List<OutgoingMessageEntity> expectedMessages = new ArrayList<>(messageCount);
+    final List<MessageProtos.Envelope> expectedMessages = new ArrayList<>(messageCount);
 
     for (int i = 0; i < messageCount; i++) {
       final UUID messageGuid = UUID.randomUUID();
       final MessageProtos.Envelope message = generateRandomMessage(messageGuid, sealedSender);
-      final long messageId = messagesCache.insert(messageGuid, DESTINATION_UUID, DESTINATION_DEVICE_ID, message);
+      messagesCache.insert(messageGuid, DESTINATION_UUID, DESTINATION_DEVICE_ID, message);
 
-      expectedMessages.add(MessagesCache.constructEntityFromEnvelope(message));
+      expectedMessages.add(message);
     }
 
     assertEquals(expectedMessages, messagesCache.get(DESTINATION_UUID, DESTINATION_DEVICE_ID, messageCount));
@@ -232,7 +229,7 @@ class MessagesCacheTest {
 
     if (!sealedSender) {
       envelopeBuilder.setSourceDevice(random.nextInt(256))
-          .setSource("+1" + RandomStringUtils.randomNumeric(10));
+          .setSourceUuid(UUID.randomUUID().toString());
     }
 
     return envelopeBuilder.build();
@@ -292,15 +289,18 @@ class MessagesCacheTest {
 
     final MessageAvailabilityListener listener = new MessageAvailabilityListener() {
       @Override
-      public void handleNewMessagesAvailable() {
+      public boolean handleNewMessagesAvailable() {
         synchronized (notified) {
           notified.set(true);
           notified.notifyAll();
+
+          return true;
         }
       }
 
       @Override
-      public void handleMessagesPersisted() {
+      public boolean handleMessagesPersisted() {
+        return true;
       }
     };
 
@@ -325,14 +325,17 @@ class MessagesCacheTest {
 
     final MessageAvailabilityListener listener = new MessageAvailabilityListener() {
       @Override
-      public void handleNewMessagesAvailable() {
+      public boolean handleNewMessagesAvailable() {
+        return true;
       }
 
       @Override
-      public void handleMessagesPersisted() {
+      public boolean handleMessagesPersisted() {
         synchronized (notified) {
           notified.set(true);
           notified.notifyAll();
+
+          return true;
         }
       }
     };
@@ -353,4 +356,72 @@ class MessagesCacheTest {
     });
   }
 
+
+  /**
+   * Helper class that implements {@link MessageAvailabilityListener#handleNewMessagesAvailable()} by always returning
+   * {@code false}. Its {@code counter} field tracks how many times {@code handleNewMessagesAvailable} has been called.
+   * <p>
+   * It uses a parameterized {@code AtomicBoolean} for asynchronous observation. It <em>must</em> be reset to
+   * {@code false} between observations.
+   */
+  private static class NewMessagesAvailabilityClosedListener implements MessageAvailabilityListener {
+
+    private int counter;
+
+    private final Consumer<Integer> messageHandledCallback;
+    private final CompletableFuture<Void> firstMessageHandled = new CompletableFuture<>();
+
+    private NewMessagesAvailabilityClosedListener(final Consumer<Integer> messageHandledCallback) {
+      this.messageHandledCallback = messageHandledCallback;
+    }
+
+    @Override
+    public boolean handleNewMessagesAvailable() {
+      counter++;
+      messageHandledCallback.accept(counter);
+      firstMessageHandled.complete(null);
+
+      return false;
+
+    }
+
+    @Override
+    public boolean handleMessagesPersisted() {
+      return true;
+    }
+  }
+
+  @Test
+  void testAvailabilityListenerResponses() {
+    final NewMessagesAvailabilityClosedListener listener1 = new NewMessagesAvailabilityClosedListener(
+        count -> assertEquals(1, count));
+    final NewMessagesAvailabilityClosedListener listener2 = new NewMessagesAvailabilityClosedListener(
+        count -> assertEquals(1, count));
+
+    assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+      messagesCache.addMessageAvailabilityListener(DESTINATION_UUID, DESTINATION_DEVICE_ID, listener1);
+      final UUID messageGuid1 = UUID.randomUUID();
+      messagesCache.insert(messageGuid1, DESTINATION_UUID, DESTINATION_DEVICE_ID,
+          generateRandomMessage(messageGuid1, true));
+
+      listener1.firstMessageHandled.get();
+
+      // Avoid a race condition by blocking on the message handled future *and* the current notification executor task—
+      // the notification executor task includes unsubscribing `listener1`, and, if we don’t wait, sometimes
+      // `listener2` will get subscribed before `listener1` is cleaned up
+      notificationExecutorService.submit(() -> listener1.firstMessageHandled.get()).get();
+
+      final UUID messageGuid2 = UUID.randomUUID();
+      messagesCache.insert(messageGuid2, DESTINATION_UUID, DESTINATION_DEVICE_ID,
+          generateRandomMessage(messageGuid2, true));
+
+      messagesCache.addMessageAvailabilityListener(DESTINATION_UUID, DESTINATION_DEVICE_ID, listener2);
+
+      final UUID messageGuid3 = UUID.randomUUID();
+      messagesCache.insert(messageGuid3, DESTINATION_UUID, DESTINATION_DEVICE_ID,
+          generateRandomMessage(messageGuid3, true));
+
+      listener2.firstMessageHandled.get();
+    });
+  }
 }

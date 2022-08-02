@@ -15,11 +15,10 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntityList;
 import org.whispersystems.textsecuregcm.metrics.PushLatencyManager;
 import org.whispersystems.textsecuregcm.redis.RedisOperation;
 import org.whispersystems.textsecuregcm.util.Constants;
+import org.whispersystems.textsecuregcm.util.Pair;
 
 public class MessagesManager {
 
@@ -61,10 +60,10 @@ public class MessagesManager {
     return messagesCache.hasMessages(destinationUuid, destinationDevice);
   }
 
-  public OutgoingMessageEntityList getMessagesForDevice(UUID destinationUuid, long destinationDevice, final String userAgent, final boolean cachedMessagesOnly) {
+  public Pair<List<Envelope>, Boolean> getMessagesForDevice(UUID destinationUuid, long destinationDevice, final String userAgent, final boolean cachedMessagesOnly) {
     RedisOperation.unchecked(() -> pushLatencyManager.recordQueueRead(destinationUuid, destinationDevice, userAgent));
 
-    List<OutgoingMessageEntity> messageList = new ArrayList<>();
+    List<Envelope> messageList = new ArrayList<>();
 
     if (!cachedMessagesOnly) {
       messageList.addAll(messagesDynamoDb.load(destinationUuid, destinationDevice, RESULT_SET_CHUNK_SIZE));
@@ -74,7 +73,7 @@ public class MessagesManager {
       messageList.addAll(messagesCache.get(destinationUuid, destinationDevice, RESULT_SET_CHUNK_SIZE - messageList.size()));
     }
 
-    return new OutgoingMessageEntityList(messageList, messageList.size() >= RESULT_SET_CHUNK_SIZE);
+    return new Pair<>(messageList, messageList.size() >= RESULT_SET_CHUNK_SIZE);
   }
 
   public void clear(UUID destinationUuid) {
@@ -87,8 +86,8 @@ public class MessagesManager {
     messagesDynamoDb.deleteAllMessagesForDevice(destinationUuid, deviceId);
   }
 
-  public Optional<OutgoingMessageEntity> delete(UUID destinationUuid, long destinationDeviceId, UUID guid, Long serverTimestamp) {
-    Optional<OutgoingMessageEntity> removed = messagesCache.remove(destinationUuid, destinationDeviceId, guid);
+  public Optional<Envelope> delete(UUID destinationUuid, long destinationDeviceId, UUID guid, Long serverTimestamp) {
+    Optional<Envelope> removed = messagesCache.remove(destinationUuid, destinationDeviceId, guid);
 
     if (removed.isEmpty()) {
       if (serverTimestamp == null) {
@@ -104,7 +103,10 @@ public class MessagesManager {
     return removed;
   }
 
-  public void persistMessages(
+  /**
+   * @return the number of messages successfully removed from the cache.
+   */
+  public int persistMessages(
       final UUID destinationUuid,
       final long destinationDeviceId,
       final List<Envelope> messages) {
@@ -114,10 +116,14 @@ public class MessagesManager {
         .collect(Collectors.toList());
 
     messagesDynamoDb.store(nonEphemeralMessages, destinationUuid, destinationDeviceId);
-    messagesCache.remove(destinationUuid, destinationDeviceId,
-        messages.stream().map(message -> UUID.fromString(message.getServerGuid())).collect(Collectors.toList()));
+
+    final List<UUID> messageGuids = messages.stream().map(message -> UUID.fromString(message.getServerGuid()))
+        .collect(Collectors.toList());
+    int messagesRemovedFromCache = messagesCache.remove(destinationUuid, destinationDeviceId, messageGuids).size();
 
     persistMessageMeter.mark(nonEphemeralMessages.size());
+
+    return messagesRemovedFromCache;
   }
 
   public void addMessageAvailabilityListener(

@@ -10,38 +10,15 @@ import java.util.List;
 import javax.validation.Valid;
 import javax.validation.constraints.NotNull;
 
-public class IncomingMessageList {
-
-  @JsonProperty
-  @NotNull
-  @Valid
-  private final List<@NotNull IncomingMessage> messages;
-
-  @JsonProperty
-  private final long timestamp;
-
-  @JsonProperty
-  private final boolean online;
+public record IncomingMessageList(@NotNull @Valid List<@NotNull IncomingMessage> messages,
+                                  boolean online, boolean urgent, long timestamp) {
 
   @JsonCreator
-  public IncomingMessageList(
-      @JsonProperty("messages") final List<@NotNull IncomingMessage> messages,
-      @JsonProperty("online") final boolean online,
-      @JsonProperty("timestamp") final long timestamp) {
-    this.messages = messages;
-    this.timestamp = timestamp;
-    this.online = online;
-  }
+  public IncomingMessageList(@JsonProperty("messages") @NotNull @Valid List<@NotNull IncomingMessage> messages,
+      @JsonProperty("online") boolean online,
+      @JsonProperty("urgent") Boolean urgent,
+      @JsonProperty("timestamp") long timestamp) {
 
-  public List<IncomingMessage> getMessages() {
-    return messages;
-  }
-
-  public long getTimestamp() {
-    return timestamp;
-  }
-
-  public boolean isOnline() {
-    return online;
+    this(messages, online, urgent == null || urgent, timestamp);
   }
 }

@@ -4,57 +4,44 @@
  */
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.protobuf.ByteString;
+import java.util.Base64;
+import java.util.UUID;
+import javax.annotation.Nullable;
+import org.apache.commons.lang3.StringUtils;
+import org.whispersystems.textsecuregcm.storage.Account;
 
-public class IncomingMessage {
+public record IncomingMessage(int type, long destinationDeviceId, int destinationRegistrationId, String content) {
 
-  @JsonProperty
-  private final int type;
+  public MessageProtos.Envelope toEnvelope(final UUID destinationUuid,
+      @Nullable Account sourceAccount,
+      @Nullable Long sourceDeviceId,
+      final long timestamp,
+      final boolean urgent) {
 
-  @JsonProperty
-  private final String destination;
+    final MessageProtos.Envelope.Type envelopeType = MessageProtos.Envelope.Type.forNumber(type());
 
-  @JsonProperty
-  private final long destinationDeviceId;
+    if (envelopeType == null) {
+      throw new IllegalArgumentException("Bad envelope type: " + type());
+    }
 
-  @JsonProperty
-  private final int destinationRegistrationId;
+    final MessageProtos.Envelope.Builder envelopeBuilder = MessageProtos.Envelope.newBuilder();
 
-  @JsonProperty
-  private final String content;
+    envelopeBuilder.setType(envelopeType)
+        .setTimestamp(timestamp)
+        .setServerTimestamp(System.currentTimeMillis())
+        .setDestinationUuid(destinationUuid.toString())
+        .setUrgent(urgent);
 
-  @JsonCreator
-  public IncomingMessage(
-      @JsonProperty("id") final int type,
-      @JsonProperty("destination") final String destination,
-      @JsonProperty("destinationDeviceId") final long destinationDeviceId,
-      @JsonProperty("destinationRegistrationId") final int destinationRegistrationId,
-      @JsonProperty("content") final String content) {
-    this.type = type;
-    this.destination = destination;
-    this.destinationDeviceId = destinationDeviceId;
-    this.destinationRegistrationId = destinationRegistrationId;
-    this.content = content;
-  }
+    if (sourceAccount != null && sourceDeviceId != null) {
+      envelopeBuilder.setSourceUuid(sourceAccount.getUuid().toString())
+          .setSourceDevice(sourceDeviceId.intValue());
+    }
 
-  public String getDestination() {
-    return destination;
-  }
+    if (StringUtils.isNotEmpty(content())) {
+      envelopeBuilder.setContent(ByteString.copyFrom(Base64.getDecoder().decode(content())));
+    }
 
-  public int getType() {
-    return type;
-  }
-
-  public long getDestinationDeviceId() {
-    return destinationDeviceId;
-  }
-
-  public int getDestinationRegistrationId() {
-    return destinationRegistrationId;
-  }
-
-  public String getContent() {
-    return content;
+    return envelopeBuilder.build();
   }
 }

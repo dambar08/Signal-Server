@@ -7,17 +7,18 @@ package org.whispersystems.textsecuregcm.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.lettuce.core.cluster.SlotHash;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -31,13 +32,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope.Type;
 import org.whispersystems.textsecuregcm.metrics.PushLatencyManager;
 import org.whispersystems.textsecuregcm.redis.RedisClusterExtension;
 import org.whispersystems.textsecuregcm.tests.util.MessagesDynamoDbExtension;
-import org.whispersystems.textsecuregcm.util.AttributeValues;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 class MessagePersisterIntegrationTest {
@@ -63,10 +61,14 @@ class MessagePersisterIntegrationTest {
       connection.sync().upstream().commands().configSet("notify-keyspace-events", "K$glz");
     });
 
+    @SuppressWarnings("unchecked") final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager =
+        mock(DynamicConfigurationManager.class);
+
+    when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
+
     final MessagesDynamoDb messagesDynamoDb = new MessagesDynamoDb(dynamoDbExtension.getDynamoDbClient(),
         MessagesDynamoDbExtension.TABLE_NAME, Duration.ofDays(14));
     final AccountsManager accountsManager = mock(AccountsManager.class);
-    final DynamicConfigurationManager dynamicConfigurationManager = mock(DynamicConfigurationManager.class);
 
     notificationExecutorService = Executors.newSingleThreadExecutor();
     messagesCache = new MessagesCache(REDIS_CLUSTER_EXTENSION.getRedisCluster(),
@@ -83,6 +85,7 @@ class MessagePersisterIntegrationTest {
     when(account.getNumber()).thenReturn("+18005551234");
     when(account.getUuid()).thenReturn(accountUuid);
     when(accountsManager.getByAccountIdentifier(accountUuid)).thenReturn(Optional.of(account));
+
     when(dynamicConfigurationManager.getConfiguration()).thenReturn(new DynamicConfiguration());
 
     messagesCache.start();
@@ -121,14 +124,16 @@ class MessagePersisterIntegrationTest {
 
       messagesManager.addMessageAvailabilityListener(account.getUuid(), 1, new MessageAvailabilityListener() {
         @Override
-        public void handleNewMessagesAvailable() {
+        public boolean handleNewMessagesAvailable() {
+          return true;
         }
 
         @Override
-        public void handleMessagesPersisted() {
+        public boolean handleMessagesPersisted() {
           synchronized (messagesPersisted) {
             messagesPersisted.set(true);
             messagesPersisted.notifyAll();
+            return true;
           }
         }
       });
@@ -143,20 +148,19 @@ class MessagePersisterIntegrationTest {
 
       messagePersister.stop();
 
-      final List<MessageProtos.Envelope> persistedMessages = new ArrayList<>(messageCount);
-
       DynamoDbClient dynamoDB = dynamoDbExtension.getDynamoDbClient();
-      for (Map<String, AttributeValue> item : dynamoDB
-          .scan(ScanRequest.builder().tableName(MessagesDynamoDbExtension.TABLE_NAME).build()).items()) {
-        persistedMessages.add(MessageProtos.Envelope.newBuilder()
-            .setServerGuid(AttributeValues.getUUID(item, "U", null).toString())
-            .setType(Type.forNumber(AttributeValues.getInt(item, "T", -1)))
-            .setTimestamp(AttributeValues.getLong(item, "TS", -1))
-            .setServerTimestamp(extractServerTimestamp(AttributeValues.getByteArray(item, "S", null)))
-            .setContent(ByteString.copyFrom(AttributeValues.getByteArray(item, "C", null)))
-            .setDestinationUuid(AttributeValues.getUUID(item, "DU", null).toString())
-            .build());
-      }
+
+      final List<MessageProtos.Envelope> persistedMessages =
+          dynamoDB.scan(ScanRequest.builder().tableName(MessagesDynamoDbExtension.TABLE_NAME).build()).items().stream()
+              .map(item -> {
+                try {
+                  return MessagesDynamoDb.convertItemToEnvelope(item);
+                } catch (InvalidProtocolBufferException e) {
+                  fail("Could not parse stored message", e);
+                  return null;
+                }
+              })
+              .toList();
 
       assertEquals(expectedMessages, persistedMessages);
     });

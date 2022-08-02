@@ -8,7 +8,11 @@ package org.whispersystems.textsecuregcm.storage;
 import static com.codahale.metrics.MetricRegistry.name;
 import static io.micrometer.core.instrument.Metrics.timer;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
+import com.google.protobuf.InvalidProtocolBufferException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import java.nio.ByteBuffer;
 import java.time.Duration;
@@ -19,10 +23,13 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
 import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.util.AttributeValues;
 import org.whispersystems.textsecuregcm.util.UUIDUtil;
+import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
@@ -37,17 +44,32 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
 
   private static final String KEY_PARTITION = "H";
   private static final String KEY_SORT = "S";
+
   private static final String LOCAL_INDEX_MESSAGE_UUID_NAME = "Message_UUID_Index";
   private static final String LOCAL_INDEX_MESSAGE_UUID_KEY_SORT = "U";
 
-  private static final String KEY_TYPE = "T";
-  private static final String KEY_TIMESTAMP = "TS";
-  private static final String KEY_SOURCE = "SN";
-  private static final String KEY_SOURCE_UUID = "SU";
-  private static final String KEY_SOURCE_DEVICE = "SD";
-  private static final String KEY_DESTINATION_UUID = "DU";
-  private static final String KEY_CONTENT = "C";
   private static final String KEY_TTL = "E";
+  private static final String KEY_ENVELOPE_BYTES = "EB";
+
+  // TODO Stop reading messages by attribute value after DATE
+  @Deprecated
+  private static final String KEY_TYPE = "T";
+
+  @Deprecated
+  private static final String KEY_TIMESTAMP = "TS";
+  private static final String KEY_SOURCE_UUID = "SU";
+
+  @Deprecated
+  private static final String KEY_SOURCE_DEVICE = "SD";
+
+  @Deprecated
+  private static final String KEY_DESTINATION_UUID = "DU";
+
+  @Deprecated
+  private static final String KEY_UPDATED_PNI = "UP";
+
+  @Deprecated
+  private static final String KEY_CONTENT = "C";
 
   private final Timer storeTimer = timer(name(getClass(), "store"));
   private final Timer loadTimer = timer(name(getClass(), "load"));
@@ -58,6 +80,11 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
 
   private final String tableName;
   private final Duration timeToLive;
+
+  private static final Counter GET_MESSAGE_WITH_ATTRIBUTES_COUNTER = Metrics.counter(name(MessagesDynamoDb.class, "loadMessage"), "format", "attributes");
+  private static final Counter GET_MESSAGE_WITH_ENVELOPE_COUNTER = Metrics.counter(name(MessagesDynamoDb.class, "loadMessage"), "format", "envelope");
+
+  private static final Logger logger = LoggerFactory.getLogger(MessagesDynamoDb.class);
 
   public MessagesDynamoDb(DynamoDbClient dynamoDb, String tableName, Duration timeToLive) {
     super(dynamoDb);
@@ -79,28 +106,14 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     List<WriteRequest> writeItems = new ArrayList<>();
     for (MessageProtos.Envelope message : messages) {
       final UUID messageUuid = UUID.fromString(message.getServerGuid());
+
       final ImmutableMap.Builder<String, AttributeValue> item = ImmutableMap.<String, AttributeValue>builder()
           .put(KEY_PARTITION, partitionKey)
           .put(KEY_SORT, convertSortKey(destinationDeviceId, message.getServerTimestamp(), messageUuid))
           .put(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT, convertLocalIndexMessageUuidSortKey(messageUuid))
-          .put(KEY_TYPE, AttributeValues.fromInt(message.getType().getNumber()))
-          .put(KEY_TIMESTAMP, AttributeValues.fromLong(message.getTimestamp()))
-          .put(KEY_TTL, AttributeValues.fromLong(getTtlForMessage(message)));
+          .put(KEY_TTL, AttributeValues.fromLong(getTtlForMessage(message)))
+          .put(KEY_ENVELOPE_BYTES, AttributeValue.builder().b(SdkBytes.fromByteArray(message.toByteArray())).build());
 
-      item.put(KEY_DESTINATION_UUID, AttributeValues.fromUUID(UUID.fromString(message.getDestinationUuid())));
-
-      if (message.hasSource()) {
-        item.put(KEY_SOURCE, AttributeValues.fromString(message.getSource()));
-      }
-      if (message.hasSourceUuid()) {
-        item.put(KEY_SOURCE_UUID, AttributeValues.fromUUID(UUID.fromString(message.getSourceUuid())));
-      }
-      if (message.hasSourceDevice()) {
-        item.put(KEY_SOURCE_DEVICE, AttributeValues.fromInt(message.getSourceDevice()));
-      }
-      if (message.hasContent()) {
-        item.put(KEY_CONTENT, AttributeValues.fromByteArray(message.getContent().toByteArray()));
-      }
       writeItems.add(WriteRequest.builder().putRequest(PutRequest.builder()
           .item(item.build())
           .build()).build());
@@ -109,7 +122,7 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     executeTableWriteItemsUntilComplete(Map.of(tableName, writeItems));
   }
 
-  public List<OutgoingMessageEntity> load(final UUID destinationAccountUuid, final long destinationDeviceId, final int requestedNumberOfMessagesToFetch) {
+  public List<MessageProtos.Envelope> load(final UUID destinationAccountUuid, final long destinationDeviceId, final int requestedNumberOfMessagesToFetch) {
     return loadTimer.record(() -> {
       final int numberOfMessagesToFetch = Math.min(requestedNumberOfMessagesToFetch, RESULT_SET_CHUNK_SIZE);
       final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
@@ -125,9 +138,14 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
               ":sortprefix", convertDestinationDeviceIdToSortKeyPrefix(destinationDeviceId)))
           .limit(numberOfMessagesToFetch)
           .build();
-      List<OutgoingMessageEntity> messageEntities = new ArrayList<>(numberOfMessagesToFetch);
+      List<MessageProtos.Envelope> messageEntities = new ArrayList<>(numberOfMessagesToFetch);
       for (Map<String, AttributeValue> message : db().queryPaginator(queryRequest).items()) {
-        messageEntities.add(convertItemToOutgoingMessageEntity(message));
+        try {
+          messageEntities.add(convertItemToEnvelope(message));
+        } catch (final InvalidProtocolBufferException e) {
+          logger.error("Failed to parse envelope", e);
+        }
+
         if (messageEntities.size() == numberOfMessagesToFetch) {
           // queryPaginator() uses limit() as the page size, not as an absolute limit
           // …but a page might be smaller than limit, because a page is capped at 1 MB
@@ -138,7 +156,7 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     });
   }
 
-  public Optional<OutgoingMessageEntity> deleteMessageByDestinationAndGuid(final UUID destinationAccountUuid,
+  public Optional<MessageProtos.Envelope> deleteMessageByDestinationAndGuid(final UUID destinationAccountUuid,
       final UUID messageUuid) {
     return deleteByGuid.record(() -> {
       final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
@@ -159,7 +177,7 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     });
   }
 
-  public Optional<OutgoingMessageEntity> deleteMessage(final UUID destinationAccountUuid,
+  public Optional<MessageProtos.Envelope> deleteMessage(final UUID destinationAccountUuid,
       final long destinationDeviceId, final UUID messageUuid, final long serverTimestamp) {
     return deleteByKey.record(() -> {
       final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
@@ -170,7 +188,12 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
           .returnValues(ReturnValue.ALL_OLD);
       final DeleteItemResponse deleteItemResponse = db().deleteItem(deleteItemRequest.build());
       if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
-        return Optional.of(convertItemToOutgoingMessageEntity(deleteItemResponse.attributes()));
+        try {
+          return Optional.of(convertItemToEnvelope(deleteItemResponse.attributes()));
+        } catch (final InvalidProtocolBufferException e) {
+          logger.error("Failed to parse envelope", e);
+          return Optional.empty();
+        }
       }
 
       return Optional.empty();
@@ -178,8 +201,8 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
   }
 
   @Nonnull
-  private Optional<OutgoingMessageEntity> deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(AttributeValue partitionKey, QueryRequest queryRequest) {
-    Optional<OutgoingMessageEntity> result = Optional.empty();
+  private Optional<MessageProtos.Envelope> deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(AttributeValue partitionKey, QueryRequest queryRequest) {
+    Optional<MessageProtos.Envelope> result = Optional.empty();
     for (Map<String, AttributeValue> item : db().queryPaginator(queryRequest).items()) {
       final byte[] rangeKeyValue = item.get(KEY_SORT).b().asByteArray();
       DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
@@ -190,7 +213,11 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
       }
       final DeleteItemResponse deleteItemResponse = db().deleteItem(deleteItemRequest.build());
       if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
-        result = Optional.of(convertItemToOutgoingMessageEntity(deleteItemResponse.attributes()));
+        try {
+          result = Optional.of(convertItemToEnvelope(deleteItemResponse.attributes()));
+        } catch (final InvalidProtocolBufferException e) {
+          logger.error("Failed to parse envelope", e);
+        }
       }
     }
     return result;
@@ -230,17 +257,33 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     });
   }
 
-  private OutgoingMessageEntity convertItemToOutgoingMessageEntity(Map<String, AttributeValue> message) {
-    final SortKey sortKey = convertSortKey(message.get(KEY_SORT).b().asByteArray());
-    final UUID messageUuid = convertLocalIndexMessageUuidSortKey(message.get(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT).b().asByteArray());
-    final int type = AttributeValues.getInt(message, KEY_TYPE, 0);
-    final long timestamp = AttributeValues.getLong(message, KEY_TIMESTAMP, 0L);
-    final String source = AttributeValues.getString(message, KEY_SOURCE, null);
-    final UUID sourceUuid = AttributeValues.getUUID(message, KEY_SOURCE_UUID, null);
-    final int sourceDevice = AttributeValues.getInt(message, KEY_SOURCE_DEVICE, 0);
-    final UUID destinationUuid = AttributeValues.getUUID(message, KEY_DESTINATION_UUID, null);
-    final byte[] content = AttributeValues.getByteArray(message, KEY_CONTENT, null);
-    return new OutgoingMessageEntity(messageUuid, type, timestamp, source, sourceUuid, sourceDevice, destinationUuid, content, sortKey.getServerTimestamp());
+  @VisibleForTesting
+  static MessageProtos.Envelope convertItemToEnvelope(final Map<String, AttributeValue> item)
+      throws InvalidProtocolBufferException {
+    final MessageProtos.Envelope envelope;
+
+    if (item.containsKey(KEY_ENVELOPE_BYTES)) {
+      envelope = MessageProtos.Envelope.parseFrom(item.get(KEY_ENVELOPE_BYTES).b().asByteArray());
+
+      GET_MESSAGE_WITH_ENVELOPE_COUNTER.increment();
+    } else {
+      final SortKey sortKey = convertSortKey(item.get(KEY_SORT).b().asByteArray());
+      final UUID messageUuid = convertLocalIndexMessageUuidSortKey(item.get(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT).b().asByteArray());
+      final int type = AttributeValues.getInt(item, KEY_TYPE, 0);
+      final long timestamp = AttributeValues.getLong(item, KEY_TIMESTAMP, 0L);
+      final UUID sourceUuid = AttributeValues.getUUID(item, KEY_SOURCE_UUID, null);
+      final int sourceDevice = AttributeValues.getInt(item, KEY_SOURCE_DEVICE, 0);
+      final UUID destinationUuid = AttributeValues.getUUID(item, KEY_DESTINATION_UUID, null);
+      final byte[] content = AttributeValues.getByteArray(item, KEY_CONTENT, null);
+      final UUID updatedPni = AttributeValues.getUUID(item, KEY_UPDATED_PNI, null);
+
+      envelope = new OutgoingMessageEntity(messageUuid, type, timestamp, sourceUuid, sourceDevice, destinationUuid,
+          updatedPni, content, sortKey.getServerTimestamp(), true).toEnvelope();
+
+      GET_MESSAGE_WITH_ATTRIBUTES_COUNTER.increment();
+    }
+
+    return envelope;
   }
 
   private void deleteRowsMatchingQuery(AttributeValue partitionKey, QueryRequest querySpec) {
