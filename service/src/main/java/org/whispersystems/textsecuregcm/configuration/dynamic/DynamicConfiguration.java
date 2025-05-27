@@ -1,11 +1,20 @@
+/*
+ * Copyright 2023 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 package org.whispersystems.textsecuregcm.configuration.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.annotations.VisibleForTesting;
+import com.vdurmont.semver4j.Semver;
+import jakarta.validation.Valid;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import javax.validation.Valid;
+import org.whispersystems.textsecuregcm.limits.RateLimiterConfig;
+import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 
 public class DynamicConfiguration {
 
@@ -15,11 +24,11 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private Map<String, DynamicPreRegistrationExperimentEnrollmentConfiguration> preRegistrationExperiments = Collections.emptyMap();
+  private Map<String, DynamicE164ExperimentEnrollmentConfiguration> e164Experiments = Collections.emptyMap();
 
   @JsonProperty
   @Valid
-  private DynamicRateLimitsConfiguration limits = new DynamicRateLimitsConfiguration();
+  private Map<String, RateLimiterConfig> limits = new HashMap<>();
 
   @JsonProperty
   @Valid
@@ -31,50 +40,43 @@ public class DynamicConfiguration {
 
   @JsonProperty
   @Valid
-  private DynamicTwilioConfiguration twilio = new DynamicTwilioConfiguration();
-
-  @JsonProperty
-  @Valid
   private DynamicCaptchaConfiguration captcha = new DynamicCaptchaConfiguration();
 
   @JsonProperty
   @Valid
-  private DynamicRateLimitChallengeConfiguration rateLimitChallenge = new DynamicRateLimitChallengeConfiguration();
-
-  @JsonProperty
-  private DynamicDirectoryReconcilerConfiguration directoryReconciler = new DynamicDirectoryReconcilerConfiguration();
-
-  @JsonProperty
-  @Valid
-  private DynamicPushLatencyConfiguration pushLatency = new DynamicPushLatencyConfiguration(Collections.emptyMap());
-
-  @JsonProperty
-  @Valid
-  private DynamicUakMigrationConfiguration uakMigrationConfiguration = new DynamicUakMigrationConfiguration();
-
-  @JsonProperty
-  @Valid
-  private DynamicTurnConfiguration turn = new DynamicTurnConfiguration();
-
-  @JsonProperty
-  @Valid
-  DynamicAbusiveHostRulesConfiguration abusiveHostRules = new DynamicAbusiveHostRulesConfiguration();
-
-  @JsonProperty
-  @Valid
   DynamicMessagePersisterConfiguration messagePersister = new DynamicMessagePersisterConfiguration();
+
+  @JsonProperty
+  @Valid
+  DynamicRegistrationConfiguration registrationConfiguration = new DynamicRegistrationConfiguration(false);
+
+  @JsonProperty
+  @Valid
+  DynamicVirtualThreadConfiguration virtualThreads = new DynamicVirtualThreadConfiguration(Collections.emptySet());
+
+  @JsonProperty
+  @Valid
+  DynamicMetricsConfiguration metricsConfiguration = new DynamicMetricsConfiguration(false, false);
+
+  @JsonProperty
+  @Valid
+  List<String> svrStatusCodesToIgnoreForAccountDeletion = Collections.emptyList();
+
+  @JsonProperty
+  @Valid
+  Map<ClientPlatform, Semver> minimumRestFreeVersion = Map.of();
 
   public Optional<DynamicExperimentEnrollmentConfiguration> getExperimentEnrollmentConfiguration(
       final String experimentName) {
     return Optional.ofNullable(experiments.get(experimentName));
   }
 
-  public Optional<DynamicPreRegistrationExperimentEnrollmentConfiguration> getPreRegistrationEnrollmentConfiguration(
+  public Optional<DynamicE164ExperimentEnrollmentConfiguration> getE164ExperimentEnrollmentConfiguration(
       final String experimentName) {
-    return Optional.ofNullable(preRegistrationExperiments.get(experimentName));
+    return Optional.ofNullable(e164Experiments.get(experimentName));
   }
 
-  public DynamicRateLimitsConfiguration getLimits() {
+  public Map<String, RateLimiterConfig> getLimits() {
     return limits;
   }
 
@@ -86,44 +88,32 @@ public class DynamicConfiguration {
     return payments;
   }
 
-  public DynamicTwilioConfiguration getTwilioConfiguration() {
-    return twilio;
-  }
-
-  @VisibleForTesting
-  public void setTwilioConfiguration(DynamicTwilioConfiguration twilioConfiguration) {
-    this.twilio = twilioConfiguration;
-  }
-
   public DynamicCaptchaConfiguration getCaptchaConfiguration() {
     return captcha;
-  }
-
-  public DynamicRateLimitChallengeConfiguration getRateLimitChallengeConfiguration() {
-    return rateLimitChallenge;
-  }
-
-  public DynamicDirectoryReconcilerConfiguration getDirectoryReconcilerConfiguration() {
-    return directoryReconciler;
-  }
-
-  public DynamicPushLatencyConfiguration getPushLatencyConfiguration() {
-    return pushLatency;
-  }
-
-  public DynamicUakMigrationConfiguration getUakMigrationConfiguration() {
-    return uakMigrationConfiguration;
-  }
-
-  public DynamicTurnConfiguration getTurnConfiguration() {
-    return turn;
-  }
-
-  public DynamicAbusiveHostRulesConfiguration getAbusiveHostRules() {
-    return abusiveHostRules;
   }
 
   public DynamicMessagePersisterConfiguration getMessagePersisterConfiguration() {
     return messagePersister;
   }
+
+  public DynamicRegistrationConfiguration getRegistrationConfiguration() {
+    return registrationConfiguration;
+  }
+
+  public DynamicVirtualThreadConfiguration getVirtualThreads() {
+    return virtualThreads;
+  }
+
+  public DynamicMetricsConfiguration getMetricsConfiguration() {
+    return metricsConfiguration;
+  }
+
+  public List<String> getSvrStatusCodesToIgnoreForAccountDeletion() {
+    return svrStatusCodesToIgnoreForAccountDeletion;
+  }
+
+  public Map<ClientPlatform, Semver> minimumRestFreeVersion() {
+    return minimumRestFreeVersion;
+  }
+
 }

@@ -16,6 +16,7 @@ config/deploy.properties
 /service/config/testing.yml
 /service/config/deploy.properties
 /service/dependency-reduced-pom.xml
+.java-version
 .opsmanage
 put.sh
 deployer-staging.properties
@@ -25,4 +26,7 @@ deployer.log
 !/service/src/main/resources/org/signal/badges/Badges_en.properties
 /service/src/main/resources/org/signal/subscriptions/Subscriptions_*.properties
 !/service/src/main/resources/org/signal/subscriptions/Subscriptions_en.properties
-/.tx/config
+.project
+.classpath
+.settings
+.DS_Store

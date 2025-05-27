@@ -7,20 +7,28 @@ package org.whispersystems.textsecuregcm.filters;
 
 import static com.codahale.metrics.MetricRegistry.name;
 
+import com.google.common.net.HttpHeaders;
 import com.vdurmont.semver4j.Semver;
+import io.grpc.Metadata;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
 import io.micrometer.core.instrument.Metrics;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
-import javax.servlet.Filter;
-import javax.servlet.FilterChain;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import javax.annotation.Nullable;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicRemoteDeprecationConfiguration;
+import org.whispersystems.textsecuregcm.grpc.RequestAttributesUtil;
+import org.whispersystems.textsecuregcm.grpc.StatusConstants;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
@@ -33,7 +41,7 @@ import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
  * If a client platform does not have a configured minimum version, all traffic from that client
  * platform is allowed.
  */
-public class RemoteDeprecationFilter implements Filter {
+public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
 
   private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
 
@@ -51,69 +59,102 @@ public class RemoteDeprecationFilter implements Filter {
 
   @Override
   public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
-    final DynamicRemoteDeprecationConfiguration configuration = dynamicConfigurationManager
-        .getConfiguration().getRemoteDeprecationConfiguration();
+    final String userAgentString = ((HttpServletRequest) request).getHeader(HttpHeaders.USER_AGENT);
 
-    final Map<ClientPlatform, Semver> minimumVersionsByPlatform = configuration.getMinimumVersions();
-    final Map<ClientPlatform, Semver> versionsPendingDeprecationByPlatform = configuration.getVersionsPendingDeprecation();
-    final Map<ClientPlatform, Set<Semver>> blockedVersionsByPlatform = configuration.getBlockedVersions();
-    final Map<ClientPlatform, Set<Semver>> versionsPendingBlockByPlatform = configuration.getVersionsPendingBlock();
-    final boolean allowUnrecognizedUserAgents = configuration.isUnrecognizedUserAgentAllowed();
-
-    boolean shouldBlock = false;
-
+    UserAgent userAgent;
     try {
-      final String userAgentString = ((HttpServletRequest) request).getHeader("User-Agent");
-      final UserAgent userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
-
-      if (blockedVersionsByPlatform.containsKey(userAgent.getPlatform())) {
-        if (blockedVersionsByPlatform.get(userAgent.getPlatform()).contains(userAgent.getVersion())) {
-          recordDeprecation(userAgent, BLOCKED_CLIENT_REASON);
-          shouldBlock = true;
-        }
-      }
-
-      if (minimumVersionsByPlatform.containsKey(userAgent.getPlatform())) {
-        if (userAgent.getVersion().isLowerThan(minimumVersionsByPlatform.get(userAgent.getPlatform()))) {
-          recordDeprecation(userAgent, EXPIRED_CLIENT_REASON);
-          shouldBlock = true;
-        }
-      }
-
-      if (versionsPendingBlockByPlatform.containsKey(userAgent.getPlatform())) {
-        if (versionsPendingBlockByPlatform.get(userAgent.getPlatform()).contains(userAgent.getVersion())) {
-          recordPendingDeprecation(userAgent, BLOCKED_CLIENT_REASON);
-        }
-      }
-
-      if (versionsPendingDeprecationByPlatform.containsKey(userAgent.getPlatform())) {
-        if (userAgent.getVersion().isLowerThan(versionsPendingDeprecationByPlatform.get(userAgent.getPlatform()))) {
-          recordPendingDeprecation(userAgent, EXPIRED_CLIENT_REASON);
-        }
-      }
+      userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
     } catch (final UnrecognizedUserAgentException e) {
-      if (!allowUnrecognizedUserAgents) {
-        recordDeprecation(null, UNRECOGNIZED_UA_REASON);
-        shouldBlock = true;
-      }
+      userAgent = null;
     }
 
-    if (shouldBlock) {
+    if (shouldBlock(userAgent)) {
       ((HttpServletResponse) response).sendError(499);
     } else {
       chain.doFilter(request, response);
     }
   }
 
+  @Override
+  public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+      final ServerCall<ReqT, RespT> call,
+      final Metadata headers,
+      final ServerCallHandler<ReqT, RespT> next) {
+
+    @Nullable final UserAgent userAgent = RequestAttributesUtil.getUserAgent()
+        .map(userAgentString -> {
+          try {
+            return UserAgentUtil.parseUserAgentString(userAgentString);
+          } catch (final UnrecognizedUserAgentException e) {
+            return null;
+          }
+        }).orElse(null);
+
+    if (shouldBlock(userAgent)) {
+      call.close(StatusConstants.UPGRADE_NEEDED_STATUS, new Metadata());
+      return new ServerCall.Listener<>() {};
+    } else {
+      return next.startCall(call, headers);
+    }
+  }
+
+  private boolean shouldBlock(@Nullable final UserAgent userAgent) {
+    final DynamicRemoteDeprecationConfiguration configuration = dynamicConfigurationManager
+        .getConfiguration().getRemoteDeprecationConfiguration();
+    final Map<ClientPlatform, Semver> minimumVersionsByPlatform = configuration.getMinimumVersions();
+    final Map<ClientPlatform, Semver> versionsPendingDeprecationByPlatform = configuration
+        .getVersionsPendingDeprecation();
+    final Map<ClientPlatform, Set<Semver>> blockedVersionsByPlatform = configuration.getBlockedVersions();
+    final Map<ClientPlatform, Set<Semver>> versionsPendingBlockByPlatform = configuration.getVersionsPendingBlock();
+
+    boolean shouldBlock = false;
+
+    if (userAgent == null) {
+      if  (configuration.isUnrecognizedUserAgentAllowed()) {
+        return false;
+      }
+      recordDeprecation(null, UNRECOGNIZED_UA_REASON);
+      return true;
+    }
+
+    if (blockedVersionsByPlatform.containsKey(userAgent.platform())) {
+      if (blockedVersionsByPlatform.get(userAgent.platform()).contains(userAgent.version())) {
+        recordDeprecation(userAgent, BLOCKED_CLIENT_REASON);
+        shouldBlock = true;
+      }
+    }
+
+    if (minimumVersionsByPlatform.containsKey(userAgent.platform())) {
+      if (userAgent.version().isLowerThan(minimumVersionsByPlatform.get(userAgent.platform()))) {
+        recordDeprecation(userAgent, EXPIRED_CLIENT_REASON);
+        shouldBlock = true;
+      }
+    }
+
+    if (versionsPendingBlockByPlatform.containsKey(userAgent.platform())) {
+      if (versionsPendingBlockByPlatform.get(userAgent.platform()).contains(userAgent.version())) {
+        recordPendingDeprecation(userAgent, BLOCKED_CLIENT_REASON);
+      }
+    }
+
+    if (versionsPendingDeprecationByPlatform.containsKey(userAgent.platform())) {
+      if (userAgent.version().isLowerThan(versionsPendingDeprecationByPlatform.get(userAgent.platform()))) {
+        recordPendingDeprecation(userAgent, EXPIRED_CLIENT_REASON);
+      }
+    }
+
+    return shouldBlock;
+  }
+
   private void recordDeprecation(final UserAgent userAgent, final String reason) {
     Metrics.counter(DEPRECATED_CLIENT_COUNTER_NAME,
-        PLATFORM_TAG, userAgent != null ? userAgent.getPlatform().name().toLowerCase() : "unrecognized",
+        PLATFORM_TAG, userAgent != null ? userAgent.platform().name().toLowerCase() : "unrecognized",
         REASON_TAG_NAME, reason).increment();
   }
 
   private void recordPendingDeprecation(final UserAgent userAgent, final String reason) {
     Metrics.counter(PENDING_DEPRECATION_COUNTER_NAME,
-        PLATFORM_TAG, userAgent.getPlatform().name().toLowerCase(),
+        PLATFORM_TAG, userAgent.platform().name().toLowerCase(),
         REASON_TAG_NAME, reason).increment();
   }
 }

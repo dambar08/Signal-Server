@@ -7,6 +7,11 @@ package org.whispersystems.textsecuregcm.workers;
 
 import com.google.common.base.MoreObjects;
 import com.google.protobuf.ByteString;
+import io.dropwizard.core.cli.Command;
+import io.dropwizard.core.setup.Bootstrap;
+import java.security.InvalidKeyException;
+import java.util.Base64;
+import java.util.Set;
 import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
@@ -14,14 +19,6 @@ import org.signal.libsignal.protocol.ecc.Curve;
 import org.signal.libsignal.protocol.ecc.ECKeyPair;
 import org.signal.libsignal.protocol.ecc.ECPrivateKey;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-
-import java.io.IOException;
-import java.security.InvalidKeyException;
-import java.util.Base64;
-import java.util.Set;
-
-import io.dropwizard.cli.Command;
-import io.dropwizard.setup.Bootstrap;
 
 public class CertificateCommand extends Command {
 
@@ -64,7 +61,7 @@ public class CertificateCommand extends Command {
     System.out.println("Private key: " + Base64.getEncoder().encodeToString(keyPair.getPrivateKey().serialize()));
   }
 
-  private void runCertificateCommand(Namespace namespace) throws IOException, InvalidKeyException {
+  private void runCertificateCommand(Namespace namespace) throws InvalidKeyException, org.signal.libsignal.protocol.InvalidKeyException {
     if (namespace.getString("key") == null) {
       System.out.println("No key specified!");
       return;

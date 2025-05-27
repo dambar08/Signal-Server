@@ -1,4 +1,9 @@
 /*
+ * Copyright 2023 Signal Messenger, LLC
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+/*
  * This is derived from Coursera's dropwizard datadog reporter.
  * https://github.com/coursera/metrics-datadog
  */
@@ -9,20 +14,21 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.ScheduledReporter;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import io.dropwizard.metrics.BaseReporterFactory;
+import io.dropwizard.metrics.common.BaseReporterFactory;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
+import org.apache.commons.lang3.StringUtils;
 import org.coursera.metrics.datadog.DatadogReporter;
 import org.coursera.metrics.datadog.DatadogReporter.Expansion;
 import org.coursera.metrics.datadog.DefaultMetricNameFormatterFactory;
 import org.coursera.metrics.datadog.DynamicTagsCallbackFactory;
 import org.coursera.metrics.datadog.MetricNameFormatterFactory;
-import org.coursera.metrics.datadog.transport.AbstractTransportFactory;
+import org.coursera.metrics.datadog.transport.UdpTransport;
 import org.whispersystems.textsecuregcm.WhisperServerVersion;
-import org.whispersystems.textsecuregcm.util.HostnameUtil;
 
 @JsonTypeName("signal-datadog")
 public class SignalDatadogReporterFactory extends BaseReporterFactory {
@@ -44,8 +50,8 @@ public class SignalDatadogReporterFactory extends BaseReporterFactory {
 
   @Valid
   @NotNull
-  @JsonProperty
-  private AbstractTransportFactory transport = null;
+  @JsonProperty("udpTransport")
+  private UdpTransportConfig udpTransportConfig;
 
   private static final EnumSet<Expansion> EXPANSIONS = EnumSet.of(
       Expansion.COUNT,
@@ -59,24 +65,28 @@ public class SignalDatadogReporterFactory extends BaseReporterFactory {
       Expansion.P999
   );
 
-  public ScheduledReporter build(MetricRegistry registry) {
-    final List<String> tagsWithVersion;
+  public ScheduledReporter build(final MetricRegistry registry) {
+    final List<String> combinedTags;
 
     {
       final String versionTag = "version:" + WhisperServerVersion.getServerVersion();
 
       if (tags != null) {
-        tagsWithVersion = new ArrayList<>(tags);
-        tagsWithVersion.add(versionTag);
+        combinedTags = new ArrayList<>(tags);
+        combinedTags.add(versionTag);
       } else {
-        tagsWithVersion = List.of(versionTag);
+        combinedTags = new ArrayList<>((List.of(versionTag)));
       }
     }
 
+    final String entityId = StringUtils.stripToNull(System.getenv("DD_ENTITY_ID"));
+    if (entityId != null) {
+      combinedTags.add("dd.internal.entity_id:" + entityId);
+    }
+
     return DatadogReporter.forRegistry(registry)
-        .withTransport(transport.build())
-        .withHost(HostnameUtil.getLocalHostname())
-        .withTags(tagsWithVersion)
+        .withTransport(udpTransportConfig.udpTransport())
+        .withTags(combinedTags)
         .withPrefix(prefix)
         .withExpansions(EXPANSIONS)
         .withMetricNameFormatter(metricNameFormatter.build())
@@ -85,5 +95,15 @@ public class SignalDatadogReporterFactory extends BaseReporterFactory {
         .convertDurationsTo(getDurationUnit())
         .convertRatesTo(getRateUnit())
         .build();
+  }
+
+  public record UdpTransportConfig(@NotNull String statsdHost, @Min(1) int port) {
+
+    public UdpTransport udpTransport() {
+      return new UdpTransport.Builder()
+          .withStatsdHost(statsdHost)
+          .withPort(port)
+          .build();
+    }
   }
 }

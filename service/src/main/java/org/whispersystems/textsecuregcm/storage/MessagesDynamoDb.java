@@ -11,30 +11,32 @@ import static io.micrometer.core.instrument.Metrics.timer;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.stream.Collectors;
-import javax.annotation.Nonnull;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Predicate;
+import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
-import org.whispersystems.textsecuregcm.entities.OutgoingMessageEntity;
 import org.whispersystems.textsecuregcm.util.AttributeValues;
-import org.whispersystems.textsecuregcm.util.UUIDUtil;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import software.amazon.awssdk.core.SdkBytes;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
-import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
-import software.amazon.awssdk.services.dynamodb.model.DeleteRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.ReturnValue;
@@ -42,74 +44,65 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 
 public class MessagesDynamoDb extends AbstractDynamoDbStore {
 
-  private static final String KEY_PARTITION = "H";
-  private static final String KEY_SORT = "S";
+  @VisibleForTesting
+  static final String KEY_PARTITION = "H";
 
-  private static final String LOCAL_INDEX_MESSAGE_UUID_NAME = "Message_UUID_Index";
-  private static final String LOCAL_INDEX_MESSAGE_UUID_KEY_SORT = "U";
+  @VisibleForTesting
+  static final String KEY_SORT = "S";
+
+  @VisibleForTesting
+  static final String LOCAL_INDEX_MESSAGE_UUID_NAME = "Message_UUID_Index";
+
+  @VisibleForTesting
+  static final String LOCAL_INDEX_MESSAGE_UUID_KEY_SORT = "U";
+
+  @VisibleForTesting
+  static final int MAY_HAVE_URGENT_MESSAGES_QUERY_LIMIT = 20;
 
   private static final String KEY_TTL = "E";
   private static final String KEY_ENVELOPE_BYTES = "EB";
 
-  // TODO Stop reading messages by attribute value after DATE
-  @Deprecated
-  private static final String KEY_TYPE = "T";
-
-  @Deprecated
-  private static final String KEY_TIMESTAMP = "TS";
-  private static final String KEY_SOURCE_UUID = "SU";
-
-  @Deprecated
-  private static final String KEY_SOURCE_DEVICE = "SD";
-
-  @Deprecated
-  private static final String KEY_DESTINATION_UUID = "DU";
-
-  @Deprecated
-  private static final String KEY_UPDATED_PNI = "UP";
-
-  @Deprecated
-  private static final String KEY_CONTENT = "C";
-
   private final Timer storeTimer = timer(name(getClass(), "store"));
-  private final Timer loadTimer = timer(name(getClass(), "load"));
-  private final Timer deleteByGuid = timer(name(getClass(), "delete", "guid"));
-  private final Timer deleteByKey = timer(name(getClass(), "delete", "key"));
-  private final Timer deleteByAccount = timer(name(getClass(), "delete", "account"));
-  private final Timer deleteByDevice = timer(name(getClass(), "delete", "device"));
 
+  private final DynamoDbAsyncClient dbAsyncClient;
   private final String tableName;
   private final Duration timeToLive;
-
-  private static final Counter GET_MESSAGE_WITH_ATTRIBUTES_COUNTER = Metrics.counter(name(MessagesDynamoDb.class, "loadMessage"), "format", "attributes");
-  private static final Counter GET_MESSAGE_WITH_ENVELOPE_COUNTER = Metrics.counter(name(MessagesDynamoDb.class, "loadMessage"), "format", "envelope");
+  private final ExecutorService messageDeletionExecutor;
+  private final Scheduler messageDeletionScheduler;
 
   private static final Logger logger = LoggerFactory.getLogger(MessagesDynamoDb.class);
 
-  public MessagesDynamoDb(DynamoDbClient dynamoDb, String tableName, Duration timeToLive) {
+  public MessagesDynamoDb(DynamoDbClient dynamoDb, DynamoDbAsyncClient dynamoDbAsyncClient, String tableName,
+      Duration timeToLive, ExecutorService messageDeletionExecutor) {
     super(dynamoDb);
 
+    this.dbAsyncClient = dynamoDbAsyncClient;
     this.tableName = tableName;
     this.timeToLive = timeToLive;
+
+    this.messageDeletionExecutor = messageDeletionExecutor;
+    this.messageDeletionScheduler = Schedulers.fromExecutor(messageDeletionExecutor);
   }
 
-  public void store(final List<MessageProtos.Envelope> messages, final UUID destinationAccountUuid, final long destinationDeviceId) {
-    storeTimer.record(() -> writeInBatches(messages, (messageBatch) -> storeBatch(messageBatch, destinationAccountUuid, destinationDeviceId)));
+  public void store(final List<MessageProtos.Envelope> messages, final UUID destinationAccountUuid,
+      final Device destinationDevice) {
+    storeTimer.record(() -> writeInBatches(messages, (messageBatch) -> storeBatch(messageBatch, destinationAccountUuid, destinationDevice)));
   }
 
-  private void storeBatch(final List<MessageProtos.Envelope> messages, final UUID destinationAccountUuid, final long destinationDeviceId) {
+  private void storeBatch(final List<MessageProtos.Envelope> messages, final UUID destinationAccountUuid,
+      final Device destinationDevice) {
     if (messages.size() > DYNAMO_DB_MAX_BATCH_SIZE) {
       throw new IllegalArgumentException("Maximum batch size of " + DYNAMO_DB_MAX_BATCH_SIZE + " exceeded with " + messages.size() + " messages");
     }
 
-    final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
+    final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid, destinationDevice);
     List<WriteRequest> writeItems = new ArrayList<>();
     for (MessageProtos.Envelope message : messages) {
       final UUID messageUuid = UUID.fromString(message.getServerGuid());
 
       final ImmutableMap.Builder<String, AttributeValue> item = ImmutableMap.<String, AttributeValue>builder()
           .put(KEY_PARTITION, partitionKey)
-          .put(KEY_SORT, convertSortKey(destinationDeviceId, message.getServerTimestamp(), messageUuid))
+          .put(KEY_SORT, convertSortKey(message.getServerTimestamp(), messageUuid))
           .put(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT, convertLocalIndexMessageUuidSortKey(messageUuid))
           .put(KEY_TTL, AttributeValues.fromLong(getTtlForMessage(message)))
           .put(KEY_ENVELOPE_BYTES, AttributeValue.builder().b(SdkBytes.fromByteArray(message.toByteArray())).build());
@@ -122,258 +115,142 @@ public class MessagesDynamoDb extends AbstractDynamoDbStore {
     executeTableWriteItemsUntilComplete(Map.of(tableName, writeItems));
   }
 
-  public List<MessageProtos.Envelope> load(final UUID destinationAccountUuid, final long destinationDeviceId, final int requestedNumberOfMessagesToFetch) {
-    return loadTimer.record(() -> {
-      final int numberOfMessagesToFetch = Math.min(requestedNumberOfMessagesToFetch, RESULT_SET_CHUNK_SIZE);
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final QueryRequest queryRequest = QueryRequest.builder()
-          .tableName(tableName)
-          .consistentRead(true)
-          .keyConditionExpression("#part = :part AND begins_with ( #sort , :sortprefix )")
-          .expressionAttributeNames(Map.of(
-              "#part", KEY_PARTITION,
-              "#sort", KEY_SORT))
-          .expressionAttributeValues(Map.of(
-              ":part", partitionKey,
-              ":sortprefix", convertDestinationDeviceIdToSortKeyPrefix(destinationDeviceId)))
-          .limit(numberOfMessagesToFetch)
-          .build();
-      List<MessageProtos.Envelope> messageEntities = new ArrayList<>(numberOfMessagesToFetch);
-      for (Map<String, AttributeValue> message : db().queryPaginator(queryRequest).items()) {
-        try {
-          messageEntities.add(convertItemToEnvelope(message));
-        } catch (final InvalidProtocolBufferException e) {
-          logger.error("Failed to parse envelope", e);
-        }
-
-        if (messageEntities.size() == numberOfMessagesToFetch) {
-          // queryPaginator() uses limit() as the page size, not as an absolute limit
-          // …but a page might be smaller than limit, because a page is capped at 1 MB
-          break;
-        }
-      }
-      return messageEntities;
-    });
+  public CompletableFuture<Boolean> mayHaveMessages(final UUID accountIdentifier, final Device device) {
+    return dbAsyncClient.query(QueryRequest.builder()
+            .tableName(tableName)
+            .consistentRead(false)
+            .limit(1)
+            .keyConditionExpression("#part = :part")
+            .expressionAttributeNames(Map.of("#part", KEY_PARTITION))
+            .expressionAttributeValues(Map.of(":part", convertPartitionKey(accountIdentifier, device))).build())
+        .thenApply(queryResponse -> queryResponse.count() > 0);
   }
 
-  public Optional<MessageProtos.Envelope> deleteMessageByDestinationAndGuid(final UUID destinationAccountUuid,
-      final UUID messageUuid) {
-    return deleteByGuid.record(() -> {
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final QueryRequest queryRequest = QueryRequest.builder()
-          .tableName(tableName)
-          .indexName(LOCAL_INDEX_MESSAGE_UUID_NAME)
-          .projectionExpression(KEY_SORT)
-          .consistentRead(true)
-          .keyConditionExpression("#part = :part AND #uuid = :uuid")
-          .expressionAttributeNames(Map.of(
-              "#part", KEY_PARTITION,
-              "#uuid", LOCAL_INDEX_MESSAGE_UUID_KEY_SORT))
-          .expressionAttributeValues(Map.of(
-              ":part", partitionKey,
-              ":uuid", convertLocalIndexMessageUuidSortKey(messageUuid)))
-          .build();
-      return deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(partitionKey, queryRequest);
-    });
+  public CompletableFuture<Boolean> mayHaveUrgentMessages(final UUID accountIdentifier, final Device device) {
+    return Flux.from(load(accountIdentifier, device, MAY_HAVE_URGENT_MESSAGES_QUERY_LIMIT))
+        .any(MessageProtos.Envelope::getUrgent)
+        .toFuture();
   }
 
-  public Optional<MessageProtos.Envelope> deleteMessage(final UUID destinationAccountUuid,
-      final long destinationDeviceId, final UUID messageUuid, final long serverTimestamp) {
-    return deleteByKey.record(() -> {
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final AttributeValue sortKey = convertSortKey(destinationDeviceId, serverTimestamp, messageUuid);
-      DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
-          .tableName(tableName)
-          .key(Map.of(KEY_PARTITION, partitionKey, KEY_SORT, sortKey))
-          .returnValues(ReturnValue.ALL_OLD);
-      final DeleteItemResponse deleteItemResponse = db().deleteItem(deleteItemRequest.build());
-      if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
-        try {
-          return Optional.of(convertItemToEnvelope(deleteItemResponse.attributes()));
-        } catch (final InvalidProtocolBufferException e) {
-          logger.error("Failed to parse envelope", e);
-          return Optional.empty();
-        }
-      }
+  public Publisher<MessageProtos.Envelope> load(final UUID destinationAccountUuid, final Device device, final Integer limit) {
+    QueryRequest.Builder queryRequestBuilder = QueryRequest.builder()
+        .tableName(tableName)
+        .consistentRead(true)
+        .keyConditionExpression("#part = :part")
+        .expressionAttributeNames(Map.of("#part", KEY_PARTITION))
+        .expressionAttributeValues(Map.of(":part", convertPartitionKey(destinationAccountUuid, device)));
 
-      return Optional.empty();
-    });
-  }
-
-  @Nonnull
-  private Optional<MessageProtos.Envelope> deleteItemsMatchingQueryAndReturnFirstOneActuallyDeleted(AttributeValue partitionKey, QueryRequest queryRequest) {
-    Optional<MessageProtos.Envelope> result = Optional.empty();
-    for (Map<String, AttributeValue> item : db().queryPaginator(queryRequest).items()) {
-      final byte[] rangeKeyValue = item.get(KEY_SORT).b().asByteArray();
-      DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
-          .tableName(tableName)
-          .key(Map.of(KEY_PARTITION, partitionKey, KEY_SORT, AttributeValues.fromByteArray(rangeKeyValue)));
-      if (result.isEmpty()) {
-        deleteItemRequest.returnValues(ReturnValue.ALL_OLD);
-      }
-      final DeleteItemResponse deleteItemResponse = db().deleteItem(deleteItemRequest.build());
-      if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
-        try {
-          result = Optional.of(convertItemToEnvelope(deleteItemResponse.attributes()));
-        } catch (final InvalidProtocolBufferException e) {
-          logger.error("Failed to parse envelope", e);
-        }
-      }
+    if (limit != null) {
+      // some callers don’t take advantage of reactive streams, so we want to support limiting the fetch size. Otherwise,
+      // we could fetch up to 1 MB (likely >1,000 messages) and discard 90% of them
+      queryRequestBuilder.limit(Math.min(RESULT_SET_CHUNK_SIZE, limit));
     }
-    return result;
+
+    final QueryRequest queryRequest = queryRequestBuilder.build();
+
+    return dbAsyncClient.queryPaginator(queryRequest).items()
+        .map(message -> {
+          try {
+            return convertItemToEnvelope(message);
+          } catch (final InvalidProtocolBufferException e) {
+            logger.error("Failed to parse envelope", e);
+            return null;
+          }
+        })
+        .filter(Predicate.not(Objects::isNull));
   }
 
-  public void deleteAllMessagesForAccount(final UUID destinationAccountUuid) {
-    deleteByAccount.record(() -> {
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final QueryRequest queryRequest = QueryRequest.builder()
-          .tableName(tableName)
-          .projectionExpression(KEY_SORT)
-          .consistentRead(true)
-          .keyConditionExpression("#part = :part")
-          .expressionAttributeNames(Map.of("#part", KEY_PARTITION))
-          .expressionAttributeValues(Map.of(":part", partitionKey))
-          .build();
-      deleteRowsMatchingQuery(partitionKey, queryRequest);
-    });
+  public CompletableFuture<Optional<MessageProtos.Envelope>> deleteMessageByDestinationAndGuid(
+      final UUID destinationAccountUuid, final Device destinationDevice, final UUID messageUuid) {
+    final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid, destinationDevice);
+    final QueryRequest queryRequest = QueryRequest.builder()
+        .tableName(tableName)
+        .indexName(LOCAL_INDEX_MESSAGE_UUID_NAME)
+        .projectionExpression(KEY_SORT)
+        .consistentRead(true)
+        .keyConditionExpression("#part = :part AND #uuid = :uuid")
+        .expressionAttributeNames(Map.of(
+            "#part", KEY_PARTITION,
+            "#uuid", LOCAL_INDEX_MESSAGE_UUID_KEY_SORT))
+        .expressionAttributeValues(Map.of(
+            ":part", partitionKey,
+            ":uuid", convertLocalIndexMessageUuidSortKey(messageUuid)))
+        .build();
+
+    // because we are filtering on message UUID, this query should return at most one item,
+    // but it’s simpler to handle the full stream and return the “last” item
+    return Flux.from(dbAsyncClient.queryPaginator(queryRequest).items())
+        .flatMap(item -> Mono.fromCompletionStage(dbAsyncClient.deleteItem(DeleteItemRequest.builder()
+            .tableName(tableName)
+            .key(Map.of(KEY_PARTITION, partitionKey, KEY_SORT,
+                AttributeValues.fromByteArray(item.get(KEY_SORT).b().asByteArray())))
+            .returnValues(ReturnValue.ALL_OLD)
+            .build())))
+        .mapNotNull(deleteItemResponse -> {
+          try {
+            if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
+              return convertItemToEnvelope(deleteItemResponse.attributes());
+            }
+          } catch (final InvalidProtocolBufferException e) {
+            logger.error("Failed to parse envelope", e);
+          }
+          return null;
+        })
+        .map(Optional::ofNullable)
+        .subscribeOn(messageDeletionScheduler)
+        .last(Optional.empty()) // if the flux is empty, last() will throw without a default
+        .toFuture();
   }
 
-  public void deleteAllMessagesForDevice(final UUID destinationAccountUuid, final long destinationDeviceId) {
-    deleteByDevice.record(() -> {
-      final AttributeValue partitionKey = convertPartitionKey(destinationAccountUuid);
-      final QueryRequest queryRequest = QueryRequest.builder()
-          .tableName(tableName)
-          .keyConditionExpression("#part = :part AND begins_with ( #sort , :sortprefix )")
-          .expressionAttributeNames(Map.of(
-              "#part", KEY_PARTITION,
-              "#sort", KEY_SORT))
-          .expressionAttributeValues(Map.of(
-              ":part", partitionKey,
-              ":sortprefix", convertDestinationDeviceIdToSortKeyPrefix(destinationDeviceId)))
-          .projectionExpression(KEY_SORT)
-          .consistentRead(true)
-          .build();
-      deleteRowsMatchingQuery(partitionKey, queryRequest);
-    });
+  public CompletableFuture<Optional<MessageProtos.Envelope>> deleteMessage(final UUID destinationAccountUuid,
+      final Device destinationDevice, final UUID messageUuid, final long serverTimestamp) {
+    DeleteItemRequest.Builder deleteItemRequest = DeleteItemRequest.builder()
+        .tableName(tableName)
+        .key(Map.of(KEY_PARTITION, convertPartitionKey(destinationAccountUuid, destinationDevice), KEY_SORT, convertSortKey(serverTimestamp, messageUuid)))
+        .returnValues(ReturnValue.ALL_OLD);
+
+    return dbAsyncClient.deleteItem(deleteItemRequest.build())
+        .thenApplyAsync(deleteItemResponse -> {
+          if (deleteItemResponse.attributes() != null && deleteItemResponse.attributes().containsKey(KEY_PARTITION)) {
+            try {
+              return Optional.of(convertItemToEnvelope(deleteItemResponse.attributes()));
+            } catch (final InvalidProtocolBufferException e) {
+              logger.error("Failed to parse envelope", e);
+            }
+          }
+
+          return Optional.empty();
+        }, messageDeletionExecutor);
   }
 
   @VisibleForTesting
   static MessageProtos.Envelope convertItemToEnvelope(final Map<String, AttributeValue> item)
       throws InvalidProtocolBufferException {
-    final MessageProtos.Envelope envelope;
 
-    if (item.containsKey(KEY_ENVELOPE_BYTES)) {
-      envelope = MessageProtos.Envelope.parseFrom(item.get(KEY_ENVELOPE_BYTES).b().asByteArray());
-
-      GET_MESSAGE_WITH_ENVELOPE_COUNTER.increment();
-    } else {
-      final SortKey sortKey = convertSortKey(item.get(KEY_SORT).b().asByteArray());
-      final UUID messageUuid = convertLocalIndexMessageUuidSortKey(item.get(LOCAL_INDEX_MESSAGE_UUID_KEY_SORT).b().asByteArray());
-      final int type = AttributeValues.getInt(item, KEY_TYPE, 0);
-      final long timestamp = AttributeValues.getLong(item, KEY_TIMESTAMP, 0L);
-      final UUID sourceUuid = AttributeValues.getUUID(item, KEY_SOURCE_UUID, null);
-      final int sourceDevice = AttributeValues.getInt(item, KEY_SOURCE_DEVICE, 0);
-      final UUID destinationUuid = AttributeValues.getUUID(item, KEY_DESTINATION_UUID, null);
-      final byte[] content = AttributeValues.getByteArray(item, KEY_CONTENT, null);
-      final UUID updatedPni = AttributeValues.getUUID(item, KEY_UPDATED_PNI, null);
-
-      envelope = new OutgoingMessageEntity(messageUuid, type, timestamp, sourceUuid, sourceDevice, destinationUuid,
-          updatedPni, content, sortKey.getServerTimestamp(), true).toEnvelope();
-
-      GET_MESSAGE_WITH_ATTRIBUTES_COUNTER.increment();
-    }
-
-    return envelope;
-  }
-
-  private void deleteRowsMatchingQuery(AttributeValue partitionKey, QueryRequest querySpec) {
-    writeInBatches(db().queryPaginator(querySpec).items(), itemBatch -> deleteItems(partitionKey, itemBatch));
-  }
-
-  private void deleteItems(AttributeValue partitionKey, List<Map<String, AttributeValue>> items) {
-    List<WriteRequest> deletes = items.stream()
-        .map(item -> WriteRequest.builder()
-            .deleteRequest(DeleteRequest.builder().key(Map.of(
-                KEY_PARTITION, partitionKey,
-                KEY_SORT, item.get(KEY_SORT))).build())
-            .build())
-        .collect(Collectors.toList());
-    executeTableWriteItemsUntilComplete(Map.of(tableName, deletes));
+    return MessageProtos.Envelope.parseFrom(item.get(KEY_ENVELOPE_BYTES).b().asByteArray());
   }
 
   private long getTtlForMessage(MessageProtos.Envelope message) {
     return message.getServerTimestamp() / 1000 + timeToLive.getSeconds();
   }
 
-  private static AttributeValue convertPartitionKey(final UUID destinationAccountUuid) {
-    return AttributeValues.fromUUID(destinationAccountUuid);
+  private static AttributeValue convertPartitionKey(final UUID destinationAccountUuid, final Device destinationDevice) {
+    final ByteBuffer byteBuffer = ByteBuffer.allocate(24);
+    byteBuffer.putLong(destinationAccountUuid.getMostSignificantBits());
+    byteBuffer.putLong(destinationAccountUuid.getLeastSignificantBits());
+    byteBuffer.putLong((destinationDevice.getCreated() & ~0x7f) + destinationDevice.getId());
+    return AttributeValues.fromByteBuffer(byteBuffer.flip());
   }
 
-  private static AttributeValue convertSortKey(final long destinationDeviceId, final long serverTimestamp, final UUID messageUuid) {
-    ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[32]);
-    byteBuffer.putLong(destinationDeviceId);
+  private static AttributeValue convertSortKey(final long serverTimestamp, final UUID messageUuid) {
+    final ByteBuffer byteBuffer = ByteBuffer.allocate(24);
     byteBuffer.putLong(serverTimestamp);
     byteBuffer.putLong(messageUuid.getMostSignificantBits());
     byteBuffer.putLong(messageUuid.getLeastSignificantBits());
     return AttributeValues.fromByteBuffer(byteBuffer.flip());
   }
 
-  private static AttributeValue convertDestinationDeviceIdToSortKeyPrefix(final long destinationDeviceId) {
-    ByteBuffer byteBuffer = ByteBuffer.wrap(new byte[8]);
-    byteBuffer.putLong(destinationDeviceId);
-    return AttributeValues.fromByteBuffer(byteBuffer.flip());
-  }
-
-  private static SortKey convertSortKey(final byte[] bytes) {
-    if (bytes.length != 32) {
-      throw new IllegalArgumentException("unexpected sort key byte length");
-    }
-
-    ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
-    final long destinationDeviceId = byteBuffer.getLong();
-    final long serverTimestamp = byteBuffer.getLong();
-    final long mostSigBits = byteBuffer.getLong();
-    final long leastSigBits = byteBuffer.getLong();
-    return new SortKey(destinationDeviceId, serverTimestamp, new UUID(mostSigBits, leastSigBits));
-  }
-
   private static AttributeValue convertLocalIndexMessageUuidSortKey(final UUID messageUuid) {
     return AttributeValues.fromUUID(messageUuid);
-  }
-
-  private static UUID convertLocalIndexMessageUuidSortKey(final byte[] bytes) {
-    return convertUuidFromBytes(bytes, "local index message uuid sort key");
-  }
-
-  private static UUID convertUuidFromBytes(final byte[] bytes, final String name) {
-    try {
-      return UUIDUtil.fromBytes(bytes);
-    } catch (final IllegalArgumentException e) {
-      throw new IllegalArgumentException("unexpected " + name + " byte length; was " + bytes.length + " but expected 16");
-    }
-  }
-
-  private static final class SortKey {
-    private final long destinationDeviceId;
-    private final long serverTimestamp;
-    private final UUID messageUuid;
-
-    public SortKey(long destinationDeviceId, long serverTimestamp, UUID messageUuid) {
-      this.destinationDeviceId = destinationDeviceId;
-      this.serverTimestamp = serverTimestamp;
-      this.messageUuid = messageUuid;
-    }
-
-    public long getDestinationDeviceId() {
-      return destinationDeviceId;
-    }
-
-    public long getServerTimestamp() {
-      return serverTimestamp;
-    }
-
-    public UUID getMessageUuid() {
-      return messageUuid;
-    }
   }
 }

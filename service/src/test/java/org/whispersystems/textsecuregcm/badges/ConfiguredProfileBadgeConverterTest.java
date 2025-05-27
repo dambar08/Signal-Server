@@ -11,7 +11,6 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -37,21 +36,19 @@ import org.whispersystems.textsecuregcm.entities.Badge;
 import org.whispersystems.textsecuregcm.entities.BadgeSvg;
 import org.whispersystems.textsecuregcm.entities.SelfBadge;
 import org.whispersystems.textsecuregcm.storage.AccountBadge;
+import org.whispersystems.textsecuregcm.util.TestClock;
 
 public class ConfiguredProfileBadgeConverterTest {
 
-  private Clock clock;
+  private final Clock clock = TestClock.pinned(Instant.ofEpochSecond(42));
   private ResourceBundleFactory resourceBundleFactory;
   private ResourceBundle resourceBundle;
 
   @BeforeEach
-  private void beforeEach() {
-    clock = mock(Clock.class);
+  void beforeEach() {
     resourceBundleFactory = mock(ResourceBundleFactory.class, (invocation) -> {
       throw new UnsupportedOperationException();
     });
-
-    when(clock.instant()).thenReturn(Instant.ofEpochSecond(42));
   }
 
   private static String idFor(int i) {

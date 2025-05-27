@@ -10,14 +10,15 @@ import static org.mockito.Mockito.mock;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.core.OutputStreamAppender;
 import ch.qos.logback.core.spi.DeferredProcessingAware;
-import io.dropwizard.logging.AbstractOutputStreamAppenderFactory;
+import com.google.common.net.HttpHeaders;
+import io.dropwizard.logging.common.AbstractOutputStreamAppenderFactory;
+import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import javax.ws.rs.core.Response;
 import org.glassfish.jersey.internal.MapPropertiesDelegate;
 import org.glassfish.jersey.server.ContainerRequest;
 import org.glassfish.jersey.server.ContainerResponse;
@@ -78,7 +79,7 @@ public class WebSocketRequestLogTest {
     ContainerRequest request = new ContainerRequest(null, URI.create("/v1/test"), "GET",
         new WebSocketSecurityContext(new ContextPrincipal(sessionContext)), new MapPropertiesDelegate(new HashMap<>()),
         null);
-    request.header("User-Agent", "SmertZeSmert");
+    request.header(HttpHeaders.USER_AGENT, "SmertZeSmert");
     request.header("Referer", "https://moxie.org");
     ContainerResponse response = new ContainerResponse(request, Response.ok("My response body").build());
 

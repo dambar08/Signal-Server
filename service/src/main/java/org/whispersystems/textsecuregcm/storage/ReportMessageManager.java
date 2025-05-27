@@ -15,24 +15,32 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tags;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
+import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
+import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.util.UUIDUtil;
 
 public class ReportMessageManager {
 
   private final ReportMessageDynamoDb reportMessageDynamoDb;
-  private final FaultTolerantRedisCluster rateLimitCluster;
+  private final FaultTolerantRedisClusterClient rateLimitCluster;
 
   private final Duration counterTtl;
 
   private final List<ReportedMessageListener> reportedMessageListeners = new ArrayList<>();
 
+  private static final String REPORT_MESSAGE_COUNTER_NAME = MetricsUtil.name(ReportMessageManager.class, "reportMessage");
+  private static final String FOUND_MESSAGE_TAG = "foundMessage";
+  private static final String TOKEN_PRESENT_TAG = "hasReportSpamToken";
+
   private static final Logger logger = LoggerFactory.getLogger(ReportMessageManager.class);
 
   public ReportMessageManager(final ReportMessageDynamoDb reportMessageDynamoDb,
-      final FaultTolerantRedisCluster rateLimitCluster,
+      final FaultTolerantRedisClusterClient rateLimitCluster,
       final Duration counterTtl) {
 
     this.reportMessageDynamoDb = reportMessageDynamoDb;
@@ -46,21 +54,29 @@ public class ReportMessageManager {
   }
 
   public void store(String sourceAci, UUID messageGuid) {
-
     try {
-      Objects.requireNonNull(sourceAci);
-
-      reportMessageDynamoDb.store(hash(messageGuid, sourceAci));
+      reportMessageDynamoDb.store(hash(messageGuid, Objects.requireNonNull(sourceAci)));
     } catch (final Exception e) {
       logger.warn("Failed to store hash", e);
     }
   }
 
-  public void report(Optional<String> sourceNumber, Optional<UUID> sourceAci, Optional<UUID> sourcePni,
-      UUID messageGuid, UUID reporterUuid) {
+  public void report(final Optional<String> sourceNumber,
+      final Optional<UUID> sourceAci,
+      final Optional<UUID> sourcePni,
+      final UUID messageGuid,
+      final UUID reporterUuid,
+      final Optional<byte[]> reportSpamToken,
+      final String reporterUserAgent) {
 
     final boolean found = sourceAci.map(uuid -> reportMessageDynamoDb.remove(hash(messageGuid, uuid.toString())))
         .orElse(false);
+
+    Metrics.counter(REPORT_MESSAGE_COUNTER_NAME,
+            Tags.of(FOUND_MESSAGE_TAG, String.valueOf(found),
+                    TOKEN_PRESENT_TAG, String.valueOf(reportSpamToken.isPresent()))
+                .and(UserAgentTagUtil.getPlatformTag(reporterUserAgent)))
+        .increment();
 
     if (found) {
       rateLimitCluster.useCluster(connection -> {
@@ -80,7 +96,7 @@ public class ReportMessageManager {
       sourceNumber.ifPresent(number ->
           reportedMessageListeners.forEach(listener -> {
             try {
-              listener.handleMessageReported(number, messageGuid, reporterUuid);
+              listener.handleMessageReported(number, messageGuid, reporterUuid, reportSpamToken);
             } catch (final Exception e) {
               logger.error("Failed to notify listener of reported message", e);
             }
@@ -89,7 +105,7 @@ public class ReportMessageManager {
   }
 
   /**
-   * Returns the number of times messages from the given account have been reported by recipients as abusive. Note that
+   * Returns the number of times messages from the given account have been reported by recipients as spam. Note that
    * this method makes a call to an external service, and callers should take care to memoize calls where possible and
    * avoid unnecessary calls.
    *

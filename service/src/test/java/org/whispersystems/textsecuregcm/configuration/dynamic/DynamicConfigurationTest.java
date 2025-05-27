@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.vdurmont.semver4j.Semver;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration.RateLimitConfiguration;
+import org.whispersystems.textsecuregcm.captcha.Action;
+import org.whispersystems.textsecuregcm.limits.RateLimiterConfig;
+import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 
@@ -42,18 +45,46 @@ class DynamicConfigurationTest {
     }
 
     {
+      final String invalid = REQUIRED_CONFIG.concat("""
+          experiments:
+            percentageOnly:
+              enrollmentPercentage: 12
+            uuidsAndPercentage:
+              uuidSelector:
+                # the below results in uuids = null
+                uuids:
+          """);
+      final Optional<DynamicConfiguration> maybeConfig =
+          DynamicConfigurationManager.parseConfiguration(invalid, DynamicConfiguration.class);
+
+      assertFalse(maybeConfig.isPresent());
+    }
+
+    {
       final String experimentConfigYaml = REQUIRED_CONFIG.concat("""
           experiments:
             percentageOnly:
               enrollmentPercentage: 12
             uuidsAndPercentage:
-              enrolledUuids:
-                - 717b1c09-ed0b-4120-bb0e-f4697534b8e1
-                - 279f264c-56d7-4bbf-b9da-de718ff90903
+              uuidSelector:
+                uuids:
+                  - 717b1c09-ed0b-4120-bb0e-f4697534b8e1
+                  - 279f264c-56d7-4bbf-b9da-de718ff90903
               enrollmentPercentage: 77
             uuidsOnly:
-              enrolledUuids:
+              uuidSelector:
+                uuids:
                 - 71618739-114c-4b1f-bb0d-6478a44eb600
+            uuids-with-dash:
+              uuidSelector:
+                uuids:
+                  - 71618739-114c-4b1f-bb0d-6478ffffffff
+            uuidsAndSubSelection:
+              uuidSelector:
+                uuids:
+                  - 6664224c-20cc-45a0-829b-95059e8a04f5
+                uuidEnrollmentPercentage: 91
+              enrollmentPercentage: 71
           """);
 
       final DynamicConfiguration config =
@@ -61,38 +92,51 @@ class DynamicConfigurationTest {
 
       assertFalse(config.getExperimentEnrollmentConfiguration("unconfigured").isPresent());
 
-      assertTrue(config.getExperimentEnrollmentConfiguration("percentageOnly").isPresent());
-      assertEquals(12, config.getExperimentEnrollmentConfiguration("percentageOnly").get().getEnrollmentPercentage());
-      assertEquals(Collections.emptySet(),
-          config.getExperimentEnrollmentConfiguration("percentageOnly").get().getEnrolledUuids());
+      final DynamicExperimentEnrollmentConfiguration percentageOnly = config.getExperimentEnrollmentConfiguration("percentageOnly").orElseThrow();
+      assertEquals(12, percentageOnly.getEnrollmentPercentage());
+      assertEquals(Collections.emptySet(), percentageOnly.getUuidSelector().getUuids());
+      assertEquals(100, percentageOnly.getUuidSelector().getUuidEnrollmentPercentage());
 
-      assertTrue(config.getExperimentEnrollmentConfiguration("uuidsAndPercentage").isPresent());
-      assertEquals(77,
-          config.getExperimentEnrollmentConfiguration("uuidsAndPercentage").get().getEnrollmentPercentage());
+      final DynamicExperimentEnrollmentConfiguration uuidsAndPercentage = config.getExperimentEnrollmentConfiguration("uuidsAndPercentage").orElseThrow();
+      assertEquals(77, uuidsAndPercentage.getEnrollmentPercentage());
       assertEquals(Set.of(UUID.fromString("717b1c09-ed0b-4120-bb0e-f4697534b8e1"),
           UUID.fromString("279f264c-56d7-4bbf-b9da-de718ff90903")),
-          config.getExperimentEnrollmentConfiguration("uuidsAndPercentage").get().getEnrolledUuids());
+          uuidsAndPercentage.getUuidSelector().getUuids());
+      assertEquals(100, uuidsAndPercentage.getUuidSelector().getUuidEnrollmentPercentage());
 
-      assertTrue(config.getExperimentEnrollmentConfiguration("uuidsOnly").isPresent());
-      assertEquals(0, config.getExperimentEnrollmentConfiguration("uuidsOnly").get().getEnrollmentPercentage());
+      final DynamicExperimentEnrollmentConfiguration uuidsOnly = config.getExperimentEnrollmentConfiguration("uuidsOnly").orElseThrow();
+      assertEquals(0, uuidsOnly.getEnrollmentPercentage());
       assertEquals(Set.of(UUID.fromString("71618739-114c-4b1f-bb0d-6478a44eb600")),
-          config.getExperimentEnrollmentConfiguration("uuidsOnly").get().getEnrolledUuids());
+          uuidsOnly.getUuidSelector().getUuids());
+      assertEquals(100, uuidsOnly.getUuidSelector().getUuidEnrollmentPercentage());
+
+      final DynamicExperimentEnrollmentConfiguration uuidsWithDash = config.getExperimentEnrollmentConfiguration("uuids-with-dash").orElseThrow();
+      assertEquals(0, uuidsWithDash.getEnrollmentPercentage());
+      assertEquals(Set.of(UUID.fromString("71618739-114c-4b1f-bb0d-6478ffffffff")),
+          uuidsWithDash.getUuidSelector().getUuids());
+      assertEquals(100, uuidsWithDash.getUuidSelector().getUuidEnrollmentPercentage());
+
+      final DynamicExperimentEnrollmentConfiguration uuidsAndSubSelection = config.getExperimentEnrollmentConfiguration("uuidsAndSubSelection").orElseThrow();
+      assertEquals(71, uuidsAndSubSelection.getEnrollmentPercentage());
+      assertEquals(Set.of(UUID.fromString("6664224c-20cc-45a0-829b-95059e8a04f5")),
+          uuidsAndSubSelection.getUuidSelector().getUuids());
+      assertEquals(91, uuidsAndSubSelection.getUuidSelector().getUuidEnrollmentPercentage());
     }
   }
 
   @Test
-  void testParsePreRegistrationExperiments() throws JsonProcessingException {
+  void testParseE164Experiments() throws JsonProcessingException {
     {
       final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
       final DynamicConfiguration emptyConfig =
           DynamicConfigurationManager.parseConfiguration(emptyConfigYaml, DynamicConfiguration.class).orElseThrow();
 
-      assertFalse(emptyConfig.getPreRegistrationEnrollmentConfiguration("test").isPresent());
+      assertFalse(emptyConfig.getE164ExperimentEnrollmentConfiguration("test").isPresent());
     }
 
     {
       final String experimentConfigYaml = REQUIRED_CONFIG.concat("""
-          preRegistrationExperiments:
+          e164Experiments:
             percentageOnly:
               enrollmentPercentage: 17
             e164sCountryCodesAndPercentage:
@@ -117,11 +161,11 @@ class DynamicConfigurationTest {
       final DynamicConfiguration config =
           DynamicConfigurationManager.parseConfiguration(experimentConfigYaml, DynamicConfiguration.class).orElseThrow();
 
-      assertFalse(config.getPreRegistrationEnrollmentConfiguration("unconfigured").isPresent());
+      assertFalse(config.getE164ExperimentEnrollmentConfiguration("unconfigured").isPresent());
 
       {
-        final Optional<DynamicPreRegistrationExperimentEnrollmentConfiguration> percentageOnly = config
-            .getPreRegistrationEnrollmentConfiguration("percentageOnly");
+        final Optional<DynamicE164ExperimentEnrollmentConfiguration> percentageOnly = config
+            .getE164ExperimentEnrollmentConfiguration("percentageOnly");
         assertTrue(percentageOnly.isPresent());
         assertEquals(17,
             percentageOnly.get().getEnrollmentPercentage());
@@ -132,8 +176,8 @@ class DynamicConfigurationTest {
       }
 
       {
-        final Optional<DynamicPreRegistrationExperimentEnrollmentConfiguration> e164sCountryCodesAndPercentage = config
-            .getPreRegistrationEnrollmentConfiguration("e164sCountryCodesAndPercentage");
+        final Optional<DynamicE164ExperimentEnrollmentConfiguration> e164sCountryCodesAndPercentage = config
+            .getE164ExperimentEnrollmentConfiguration("e164sCountryCodesAndPercentage");
 
         assertTrue(e164sCountryCodesAndPercentage.isPresent());
         assertEquals(46,
@@ -149,8 +193,8 @@ class DynamicConfigurationTest {
       }
 
       {
-        final Optional<DynamicPreRegistrationExperimentEnrollmentConfiguration> e164sAndExcludedCodes = config
-            .getPreRegistrationEnrollmentConfiguration("e164sAndExcludedCodes");
+        final Optional<DynamicE164ExperimentEnrollmentConfiguration> e164sAndExcludedCodes = config
+            .getE164ExperimentEnrollmentConfiguration("e164sAndExcludedCodes");
         assertTrue(e164sAndExcludedCodes.isPresent());
         assertEquals(0, e164sAndExcludedCodes.get().getEnrollmentPercentage());
         assertEquals(Set.of("+120255551212"),
@@ -202,32 +246,6 @@ class DynamicConfigurationTest {
   }
 
   @Test
-  void testParseTwilioConfiguration() throws JsonProcessingException {
-    {
-      final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
-      final DynamicConfiguration emptyConfig =
-          DynamicConfigurationManager.parseConfiguration(emptyConfigYaml, DynamicConfiguration.class).orElseThrow();
-
-      assertTrue(emptyConfig.getTwilioConfiguration().getNumbers().isEmpty());
-    }
-
-    {
-      final String twilioConfigYaml = REQUIRED_CONFIG.concat("""
-          twilio:
-            numbers:
-              - 2135551212
-              - 2135551313
-          """);
-
-      final DynamicTwilioConfiguration config =
-          DynamicConfigurationManager.parseConfiguration(twilioConfigYaml, DynamicConfiguration.class).orElseThrow()
-              .getTwilioConfiguration();
-
-      assertEquals(List.of("2135551212", "2135551313"), config.getNumbers());
-    }
-  }
-
-  @Test
   void testParsePaymentsConfiguration() throws JsonProcessingException {
     {
       final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
@@ -264,8 +282,6 @@ class DynamicConfigurationTest {
     {
       final String captchaConfig = """
           captcha:
-            signupCountryCodes:
-              - 1
             scoreFloor: null
           """;
 
@@ -276,142 +292,47 @@ class DynamicConfigurationTest {
     {
       final String captchaConfig = """
           captcha:
-            signupCountryCodes:
-              - 1
             scoreFloor: 0.9
+            scoreFloorByAction:
+              challenge: 0.1
+              registration: 0.2
+            hCaptchaSiteKeys:
+              challenge:
+                - ab317f2a-2b76-4098-84c9-ecdf8ea44f53
+              registration:
+                - e4ddb6ff-05e7-497b-9a29-b76e7331789c
+                - 52fdbc88-f246-4705-a7dd-05ad85b93420
           """;
 
       final DynamicCaptchaConfiguration config =
           DynamicConfigurationManager.parseConfiguration(captchaConfig, DynamicConfiguration.class).orElseThrow()
               .getCaptchaConfiguration();
 
-      assertEquals(Set.of("1"), config.getSignupCountryCodes());
       assertEquals(0.9f, config.getScoreFloor().floatValue());
+      assertEquals(0.1f, config.getScoreFloorByAction().get(Action.CHALLENGE).floatValue());
+      assertEquals(0.2f, config.getScoreFloorByAction().get(Action.REGISTRATION).floatValue());
+
+      assertThat(config.getHCaptchaSiteKeys().get(Action.CHALLENGE)).contains("ab317f2a-2b76-4098-84c9-ecdf8ea44f53");
+      assertThat(config.getHCaptchaSiteKeys().get(Action.REGISTRATION)).contains("e4ddb6ff-05e7-497b-9a29-b76e7331789c");
+      assertThat(config.getHCaptchaSiteKeys().get(Action.REGISTRATION)).contains("52fdbc88-f246-4705-a7dd-05ad85b93420");
     }
   }
 
   @Test
   void testParseLimits() throws JsonProcessingException {
-    {
-      final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
-      final DynamicConfiguration emptyConfig =
-          DynamicConfigurationManager.parseConfiguration(emptyConfigYaml, DynamicConfiguration.class).orElseThrow();
+    final String limitsConfig = REQUIRED_CONFIG.concat("""
+        limits:
+          rateLimitReset:
+            bucketSize: 17
+            permitRegenerationDuration: PT0.000004S
+        """);
 
-      assertThat(emptyConfig.getLimits().getRateLimitReset().getBucketSize()).isEqualTo(2);
-      assertThat(emptyConfig.getLimits().getRateLimitReset().getLeakRatePerMinute()).isEqualTo(2.0 / (60 * 24));
-    }
+    final RateLimiterConfig resetRateLimiterConfig =
+        DynamicConfigurationManager.parseConfiguration(limitsConfig, DynamicConfiguration.class).orElseThrow()
+            .getLimits().get(RateLimiters.For.RATE_LIMIT_RESET.id());
 
-    {
-      final String limitsConfig = REQUIRED_CONFIG.concat("""
-          limits:
-            rateLimitReset:
-              bucketSize: 17
-              leakRatePerMinute: 44
-          """);
-
-      final RateLimitConfiguration resetRateLimitConfiguration =
-          DynamicConfigurationManager.parseConfiguration(limitsConfig, DynamicConfiguration.class).orElseThrow()
-              .getLimits().getRateLimitReset();
-
-      assertThat(resetRateLimitConfiguration.getBucketSize()).isEqualTo(17);
-      assertThat(resetRateLimitConfiguration.getLeakRatePerMinute()).isEqualTo(44);
-    }
-  }
-
-  @Test
-  void testParseRateLimitReset() throws JsonProcessingException {
-    {
-      final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
-      final DynamicConfiguration emptyConfig =
-          DynamicConfigurationManager.parseConfiguration(emptyConfigYaml, DynamicConfiguration.class).orElseThrow();
-
-      assertThat(emptyConfig.getRateLimitChallengeConfiguration().getClientSupportedVersions()).isEmpty();
-    }
-
-    {
-      final String rateLimitChallengeConfig = REQUIRED_CONFIG.concat("""
-          rateLimitChallenge:
-            clientSupportedVersions:
-              IOS: 5.1.0
-              ANDROID: 5.2.0
-              DESKTOP: 5.0.0
-          """);
-
-      DynamicRateLimitChallengeConfiguration rateLimitChallengeConfiguration =
-          DynamicConfigurationManager.parseConfiguration(rateLimitChallengeConfig, DynamicConfiguration.class).orElseThrow()
-              .getRateLimitChallengeConfiguration();
-
-      final Map<ClientPlatform, Semver> clientSupportedVersions = rateLimitChallengeConfiguration.getClientSupportedVersions();
-
-      assertThat(clientSupportedVersions.get(ClientPlatform.IOS)).isEqualTo(new Semver("5.1.0"));
-      assertThat(clientSupportedVersions.get(ClientPlatform.ANDROID)).isEqualTo(new Semver("5.2.0"));
-      assertThat(clientSupportedVersions.get(ClientPlatform.DESKTOP)).isEqualTo(new Semver("5.0.0"));
-    }
-  }
-
-  @Test
-  void testParseDirectoryReconciler() throws JsonProcessingException {
-    {
-      final String emptyConfigYaml = REQUIRED_CONFIG.concat("test: true");
-      final DynamicConfiguration emptyConfig =
-          DynamicConfigurationManager.parseConfiguration(emptyConfigYaml, DynamicConfiguration.class).orElseThrow();
-
-      assertThat(emptyConfig.getDirectoryReconcilerConfiguration().isEnabled()).isTrue();
-    }
-
-    {
-      final String directoryReconcilerConfig = REQUIRED_CONFIG.concat("""
-          directoryReconciler:
-            enabled: false
-          """);
-
-      DynamicDirectoryReconcilerConfiguration directoryReconcilerConfiguration =
-          DynamicConfigurationManager.parseConfiguration(directoryReconcilerConfig, DynamicConfiguration.class).orElseThrow()
-              .getDirectoryReconcilerConfiguration();
-
-      assertThat(directoryReconcilerConfiguration.isEnabled()).isFalse();
-    }
-  }
-
-  @Test
-  void testParseTurnConfig() throws JsonProcessingException {
-    {
-      final String config = REQUIRED_CONFIG.concat("""
-          turn:
-            secret: bloop
-            uriConfigs:
-                - uris:
-                    - turn:test.org
-                  weight: -1
-           """);
-      assertThat(DynamicConfigurationManager.parseConfiguration(config, DynamicConfiguration.class)).isEmpty();
-    }
-    {
-      final String config = REQUIRED_CONFIG.concat("""
-          turn:
-            secret: bloop
-            uriConfigs:
-                - uris:
-                    - turn:test0.org
-                    - turn:test1.org
-                - uris:
-                    - turn:test2.org
-                  weight: 2
-                  enrolledNumbers:
-                    - +15555555555
-           """);
-      DynamicTurnConfiguration turnConfiguration = DynamicConfigurationManager
-          .parseConfiguration(config, DynamicConfiguration.class)
-          .orElseThrow()
-          .getTurnConfiguration();
-      assertThat(turnConfiguration.getSecret()).isEqualTo("bloop");
-      assertThat(turnConfiguration.getUriConfigs().get(0).getUris()).hasSize(2);
-      assertThat(turnConfiguration.getUriConfigs().get(1).getUris()).hasSize(1);
-      assertThat(turnConfiguration.getUriConfigs().get(0).getWeight()).isEqualTo(1);
-      assertThat(turnConfiguration.getUriConfigs().get(1).getWeight()).isEqualTo(2);
-      assertThat(turnConfiguration.getUriConfigs().get(1).getEnrolledNumbers()).containsExactly("+15555555555");
-
-    }
+    assertThat(resetRateLimiterConfig.bucketSize()).isEqualTo(17);
+    assertThat(resetRateLimiterConfig.permitRegenerationDuration()).isEqualTo(Duration.ofNanos(4_000));
   }
 
   @Test
@@ -428,6 +349,7 @@ class DynamicConfigurationTest {
       final String messagePersisterEnabledYaml = REQUIRED_CONFIG.concat("""
           messagePersister:
             persistenceEnabled: true
+            dedicatedProcessEnabled: true
           """);
 
       final DynamicConfiguration config =

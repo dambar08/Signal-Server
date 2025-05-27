@@ -1,16 +1,25 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm.entities;
 
+import static org.whispersystems.textsecuregcm.util.RegistrationIdValidator.validRegistrationId;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.google.common.annotations.VisibleForTesting;
+import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Size;
+import java.util.Optional;
+import java.util.Set;
 import javax.annotation.Nullable;
-import javax.validation.constraints.Size;
-import org.whispersystems.textsecuregcm.storage.Device.DeviceCapabilities;
+import org.whispersystems.textsecuregcm.auth.UnidentifiedAccessUtil;
+import org.whispersystems.textsecuregcm.storage.DeviceCapability;
+import org.whispersystems.textsecuregcm.util.ByteArrayAdapter;
+import org.whispersystems.textsecuregcm.util.DeviceCapabilityAdapter;
 import org.whispersystems.textsecuregcm.util.ExactlySize;
-import java.util.OptionalInt;
 
 public class AccountAttributes {
 
@@ -20,37 +29,54 @@ public class AccountAttributes {
   @JsonProperty
   private int registrationId;
 
-  @Nullable
   @JsonProperty("pniRegistrationId")
-  private Integer phoneNumberIdentityRegistrationId;
+  private int phoneNumberIdentityRegistrationId;
 
   @JsonProperty
-  @Size(max = 204, message = "This field must be less than 50 characters")
-  private String name;
+  @JsonSerialize(using = ByteArrayAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayAdapter.Deserializing.class)
+  @Size(max = 225)
+  private byte[] name;
 
   @JsonProperty
   private String registrationLock;
 
   @JsonProperty
-  @ExactlySize({0, 16})
+  @ExactlySize({0, UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH})
   private byte[] unidentifiedAccessKey;
 
   @JsonProperty
   private boolean unrestrictedUnidentifiedAccess;
 
   @JsonProperty
-  private DeviceCapabilities capabilities;
+  @JsonSerialize(using = DeviceCapabilityAdapter.Serializer.class)
+  @JsonDeserialize(using = DeviceCapabilityAdapter.Deserializer.class)
+  @Nullable
+  private Set<DeviceCapability> capabilities;
 
   @JsonProperty
   private boolean discoverableByPhoneNumber = true;
 
-  public AccountAttributes() {}
+  @JsonProperty
+  @Nullable
+  @JsonDeserialize(using = ByteArrayAdapter.Deserializing.class)
+  private byte[] recoveryPassword = null;
+
+  public AccountAttributes() {
+  }
 
   @VisibleForTesting
-  public AccountAttributes(boolean fetchesMessages, int registrationId, String name, String registrationLock,
-      boolean discoverableByPhoneNumber, final DeviceCapabilities capabilities) {
+  public AccountAttributes(
+      final boolean fetchesMessages,
+      final int registrationId,
+      final int phoneNumberIdentifierRegistrationId,
+      final byte[] name,
+      final String registrationLock,
+      final boolean discoverableByPhoneNumber,
+      final Set<DeviceCapability> capabilities) {
     this.fetchesMessages = fetchesMessages;
     this.registrationId = registrationId;
+    this.phoneNumberIdentityRegistrationId = phoneNumberIdentifierRegistrationId;
     this.name = name;
     this.registrationLock = registrationLock;
     this.discoverableByPhoneNumber = discoverableByPhoneNumber;
@@ -65,11 +91,11 @@ public class AccountAttributes {
     return registrationId;
   }
 
-  public OptionalInt getPhoneNumberIdentityRegistrationId() {
-    return phoneNumberIdentityRegistrationId != null ? OptionalInt.of(phoneNumberIdentityRegistrationId) : OptionalInt.empty();
+  public int getPhoneNumberIdentityRegistrationId() {
+    return phoneNumberIdentityRegistrationId;
   }
 
-  public String getName() {
+  public byte[] getName() {
     return name;
   }
 
@@ -85,7 +111,8 @@ public class AccountAttributes {
     return unrestrictedUnidentifiedAccess;
   }
 
-  public DeviceCapabilities getCapabilities() {
+  @Nullable
+  public Set<DeviceCapability> getCapabilities() {
     return capabilities;
   }
 
@@ -93,8 +120,24 @@ public class AccountAttributes {
     return discoverableByPhoneNumber;
   }
 
+  public Optional<byte[]> recoveryPassword() {
+    return Optional.ofNullable(recoveryPassword);
+  }
+
   @VisibleForTesting
-  public void setUnidentifiedAccessKey(final byte[] unidentifiedAccessKey) {
+  public AccountAttributes withUnidentifiedAccessKey(final byte[] unidentifiedAccessKey) {
     this.unidentifiedAccessKey = unidentifiedAccessKey;
+    return this;
+  }
+
+  @VisibleForTesting
+  public AccountAttributes withRecoveryPassword(final byte[] recoveryPassword) {
+    this.recoveryPassword = recoveryPassword;
+    return this;
+  }
+
+  @AssertTrue
+  public boolean isEachRegistrationIdValid() {
+    return validRegistrationId(registrationId) && validRegistrationId(phoneNumberIdentityRegistrationId);
   }
 }

@@ -1,40 +1,30 @@
 /*
- * Copyright 2013-2021 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.storage;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
 import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
-import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition;
-import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType;
-import java.util.List;
-import java.util.Set;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class RemoteConfigsTest {
 
-  private static final String REMOTE_CONFIGS_TABLE_NAME = "remote_configs_test";
-
   @RegisterExtension
-  static DynamoDbExtension dynamoDbExtension = DynamoDbExtension.builder()
-      .tableName(REMOTE_CONFIGS_TABLE_NAME)
-      .hashKey(RemoteConfigs.KEY_NAME)
-      .attributeDefinition(AttributeDefinition.builder()
-          .attributeName(RemoteConfigs.KEY_NAME)
-          .attributeType(ScalarAttributeType.S)
-          .build())
-      .build();
+  static final DynamoDbExtension DYNAMO_DB_EXTENSION = new DynamoDbExtension(Tables.REMOTE_CONFIGS);
 
   private RemoteConfigs remoteConfigs;
 
   @BeforeEach
   void setUp() {
-    remoteConfigs = new RemoteConfigs(dynamoDbExtension.getDynamoDbClient(), REMOTE_CONFIGS_TABLE_NAME);
+    remoteConfigs = new RemoteConfigs(DYNAMO_DB_EXTENSION.getDynamoDbClient(), Tables.REMOTE_CONFIGS.tableName());
   }
 
   @Test
@@ -69,7 +59,6 @@ class RemoteConfigsTest {
   void testUpdate() {
     remoteConfigs.set(new RemoteConfig("android.stickers", 50, Set.of(), "FALSE", "TRUE", null));
     remoteConfigs.set(new RemoteConfig("value.sometimes", 22, Set.of(), "def", "!", null));
-    remoteConfigs.set(new RemoteConfig("ios.stickers", 50, Set.of(AuthHelper.DISABLED_UUID), "FALSE", "TRUE", null));
     remoteConfigs.set(new RemoteConfig("ios.stickers", 75, Set.of(), "FALSE", "TRUE", null));
     remoteConfigs.set(new RemoteConfig("value.sometimes", 77, Set.of(), "hey", "wut", null));
 

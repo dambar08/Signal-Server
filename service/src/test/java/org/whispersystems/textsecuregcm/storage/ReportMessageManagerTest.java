@@ -18,6 +18,7 @@ import static org.mockito.Mockito.when;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -68,8 +69,8 @@ class ReportMessageManagerTest {
 
     verify(reportMessageDynamoDb).store(any());
 
-    doThrow(RuntimeException.class)
-        .when(reportMessageDynamoDb).store(any());
+    when(reportMessageDynamoDb.store(any()))
+        .thenReturn(CompletableFuture.failedFuture(new RuntimeException()));
 
     assertDoesNotThrow(() -> reportMessageManager.store(sourceAci.toString(), messageGuid));
   }
@@ -81,16 +82,16 @@ class ReportMessageManagerTest {
 
     when(reportMessageDynamoDb.remove(any())).thenReturn(false);
     reportMessageManager.report(Optional.of(sourceNumber), Optional.of(sourceAci), Optional.of(sourcePni), messageGuid,
-        reporterUuid);
+        reporterUuid, Optional.empty(), "user-agent");
 
     assertEquals(0, reportMessageManager.getRecentReportCount(sourceAccount));
 
     when(reportMessageDynamoDb.remove(any())).thenReturn(true);
     reportMessageManager.report(Optional.of(sourceNumber), Optional.of(sourceAci), Optional.of(sourcePni), messageGuid,
-        reporterUuid);
+        reporterUuid, Optional.empty(), "user-agent");
 
     assertEquals(1, reportMessageManager.getRecentReportCount(sourceAccount));
-    verify(listener).handleMessageReported(sourceNumber, messageGuid, reporterUuid);
+    verify(listener).handleMessageReported(sourceNumber, messageGuid, reporterUuid, Optional.empty());
   }
 
   @Test
@@ -100,7 +101,7 @@ class ReportMessageManagerTest {
 
     for (int i = 0; i < 100; i++) {
       reportMessageManager.report(Optional.of(sourceNumber), Optional.of(sourceAci), Optional.of(sourcePni),
-          messageGuid, UUID.randomUUID());
+          messageGuid, UUID.randomUUID(), Optional.empty(), "user-agent");
     }
 
     assertTrue(reportMessageManager.getRecentReportCount(sourceAccount) > 10);
@@ -114,7 +115,7 @@ class ReportMessageManagerTest {
     for (int i = 0; i < 100; i++) {
       reportMessageManager.report(Optional.of(sourceNumber), Optional.of(sourceAci), Optional.of(sourcePni),
           messageGuid,
-          reporterUuid);
+          reporterUuid, Optional.empty(), "user-agent");
     }
 
     assertEquals(1, reportMessageManager.getRecentReportCount(sourceAccount));
@@ -127,11 +128,11 @@ class ReportMessageManagerTest {
 
     for (int i = 0; i < 100; i++) {
       reportMessageManager.report(Optional.empty(), Optional.of(sourceAci), Optional.of(sourcePni),
-          messageGuid, UUID.randomUUID());
+          messageGuid, UUID.randomUUID(), Optional.empty(), "user-agent");
     }
 
     reportMessageManager.report(Optional.empty(), Optional.of(sourceAci), Optional.empty(),
-        messageGuid, UUID.randomUUID());
+        messageGuid, UUID.randomUUID(), Optional.empty(), "user-agent");
 
     final int recentReportCount = reportMessageManager.getRecentReportCount(sourceAccount);
     assertTrue(recentReportCount > 10);

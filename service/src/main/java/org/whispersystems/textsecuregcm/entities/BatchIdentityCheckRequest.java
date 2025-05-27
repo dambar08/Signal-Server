@@ -5,21 +5,31 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import java.util.List;
-import java.util.UUID;
-import javax.validation.Valid;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
+import javax.annotation.Nullable;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
 import org.whispersystems.textsecuregcm.util.ExactlySize;
+import org.whispersystems.textsecuregcm.util.ServiceIdentifierAdapter;
 
 public record BatchIdentityCheckRequest(@Valid @NotNull @Size(max = 1000) List<Element> elements) {
 
   /**
-   * @param aci         account id
-   * @param fingerprint most significant 4 bytes of SHA-256 of the 33-byte identity key field (32-byte curve25519
-   *                    public key prefixed with 0x05)
+   * @param uuid        account id or phone number id
+   * @param fingerprint most significant 4 bytes of SHA-256 of the 33-byte identity key field (32-byte curve25519 public
+   *                    key prefixed with 0x05)
    */
-  public record Element(@NotNull UUID aci, @NotNull @ExactlySize(4) byte[] fingerprint) {
+  public record Element(@NotNull
+                        @JsonSerialize(using = ServiceIdentifierAdapter.ServiceIdentifierSerializer.class)
+                        @JsonDeserialize(using = ServiceIdentifierAdapter.ServiceIdentifierDeserializer.class)
+                        ServiceIdentifier uuid,
 
-  }
+                        @NotNull
+                        @ExactlySize(4)
+                        byte[] fingerprint) {
+ }
 }

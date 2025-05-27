@@ -5,27 +5,50 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.google.protobuf.ByteString;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 import javax.annotation.Nullable;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
+import org.whispersystems.textsecuregcm.util.ServiceIdentifierAdapter;
 
-public record OutgoingMessageEntity(UUID guid, int type, long timestamp, @Nullable UUID sourceUuid, int sourceDevice,
-                                    UUID destinationUuid, @Nullable UUID updatedPni, byte[] content,
-                                    long serverTimestamp, boolean urgent) {
+public record OutgoingMessageEntity(UUID guid,
+                                    int type,
+                                    long timestamp,
+
+                                    @JsonSerialize(using = ServiceIdentifierAdapter.ServiceIdentifierSerializer.class)
+                                    @JsonDeserialize(using = ServiceIdentifierAdapter.ServiceIdentifierDeserializer.class)
+                                    @Nullable
+                                    ServiceIdentifier sourceUuid,
+
+                                    int sourceDevice,
+
+                                    @JsonSerialize(using = ServiceIdentifierAdapter.ServiceIdentifierSerializer.class)
+                                    @JsonDeserialize(using = ServiceIdentifierAdapter.ServiceIdentifierDeserializer.class)
+                                    ServiceIdentifier destinationUuid,
+
+                                    @Nullable UUID updatedPni,
+                                    byte[] content,
+                                    long serverTimestamp,
+                                    boolean urgent,
+                                    boolean story,
+                                    @Nullable byte[] reportSpamToken) {
 
   public MessageProtos.Envelope toEnvelope() {
     final MessageProtos.Envelope.Builder builder = MessageProtos.Envelope.newBuilder()
         .setType(MessageProtos.Envelope.Type.forNumber(type()))
-        .setTimestamp(timestamp())
+        .setClientTimestamp(timestamp())
         .setServerTimestamp(serverTimestamp())
-        .setDestinationUuid(destinationUuid().toString())
+        .setDestinationServiceId(destinationUuid().toServiceIdentifierString())
         .setServerGuid(guid().toString())
+        .setStory(story)
         .setUrgent(urgent);
 
     if (sourceUuid() != null) {
-      builder.setSourceUuid(sourceUuid().toString());
+      builder.setSourceServiceId(sourceUuid().toServiceIdentifierString());
       builder.setSourceDevice(sourceDevice());
     }
 
@@ -37,21 +60,28 @@ public record OutgoingMessageEntity(UUID guid, int type, long timestamp, @Nullab
       builder.setUpdatedPni(updatedPni().toString());
     }
 
+    if (reportSpamToken != null) {
+      builder.setReportSpamToken(ByteString.copyFrom(reportSpamToken));
+    }
+
     return builder.build();
   }
 
   public static OutgoingMessageEntity fromEnvelope(final MessageProtos.Envelope envelope) {
+    ByteString token = envelope.getReportSpamToken();
     return new OutgoingMessageEntity(
         UUID.fromString(envelope.getServerGuid()),
         envelope.getType().getNumber(),
-        envelope.getTimestamp(),
-        envelope.hasSourceUuid() ? UUID.fromString(envelope.getSourceUuid()) : null,
+        envelope.getClientTimestamp(),
+        envelope.hasSourceServiceId() ? ServiceIdentifier.valueOf(envelope.getSourceServiceId()) : null,
         envelope.getSourceDevice(),
-        envelope.hasDestinationUuid() ? UUID.fromString(envelope.getDestinationUuid()) : null,
+        envelope.hasDestinationServiceId() ? ServiceIdentifier.valueOf(envelope.getDestinationServiceId()) : null,
         envelope.hasUpdatedPni() ? UUID.fromString(envelope.getUpdatedPni()) : null,
         envelope.getContent().toByteArray(),
         envelope.getServerTimestamp(),
-        envelope.getUrgent());
+        envelope.getUrgent(),
+        envelope.getStory(),
+        token.isEmpty() ? null : token.toByteArray());
   }
 
   @Override
@@ -63,17 +93,26 @@ public record OutgoingMessageEntity(UUID guid, int type, long timestamp, @Nullab
       return false;
     }
     final OutgoingMessageEntity that = (OutgoingMessageEntity) o;
-    return type == that.type && timestamp == that.timestamp && sourceDevice == that.sourceDevice
-        && serverTimestamp == that.serverTimestamp && guid.equals(that.guid)
-        && Objects.equals(sourceUuid, that.sourceUuid) && destinationUuid.equals(that.destinationUuid)
-        && Objects.equals(updatedPni, that.updatedPni) && Arrays.equals(content, that.content) && urgent == that.urgent;
+    return guid.equals(that.guid) &&
+        type == that.type &&
+        timestamp == that.timestamp &&
+        Objects.equals(sourceUuid, that.sourceUuid) &&
+        sourceDevice == that.sourceDevice &&
+        destinationUuid.equals(that.destinationUuid) &&
+        Objects.equals(updatedPni, that.updatedPni) &&
+        Arrays.equals(content, that.content) &&
+        serverTimestamp == that.serverTimestamp &&
+        urgent == that.urgent &&
+        story == that.story &&
+        Arrays.equals(reportSpamToken, that.reportSpamToken);
   }
 
   @Override
   public int hashCode() {
-    int result = Objects.hash(guid, type, timestamp, sourceUuid, sourceDevice, destinationUuid, updatedPni,
-        serverTimestamp, urgent);
+    int result = Objects.hash(
+        guid, type, timestamp, sourceUuid, sourceDevice, destinationUuid, updatedPni, serverTimestamp, urgent, story);
     result = 31 * result + Arrays.hashCode(content);
+    result = 71 * result + Arrays.hashCode(reportSpamToken);
     return result;
   }
 }

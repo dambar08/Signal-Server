@@ -5,13 +5,17 @@
 
 package org.whispersystems.textsecuregcm.storage;
 
+import java.security.MessageDigest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 class AccountChangeValidator {
 
+  private static final byte[] NO_HASH = new byte[32];
+
   private final boolean allowNumberChange;
-  private final boolean allowUsernameChange;
+  private final boolean allowUsernameHashChange;
 
   static final AccountChangeValidator GENERAL_CHANGE_VALIDATOR = new AccountChangeValidator(false, false);
   static final AccountChangeValidator NUMBER_CHANGE_VALIDATOR = new AccountChangeValidator(true, false);
@@ -20,10 +24,10 @@ class AccountChangeValidator {
   private static final Logger logger = LoggerFactory.getLogger(AccountChangeValidator.class);
 
   AccountChangeValidator(final boolean allowNumberChange,
-      final boolean allowUsernameChange) {
+      final boolean allowUsernameHashChange) {
 
     this.allowNumberChange = allowNumberChange;
-    this.allowUsernameChange = allowUsernameChange;
+    this.allowUsernameHashChange = allowUsernameHashChange;
   }
 
   public void validateChange(final Account originalAccount, final Account updatedAccount) {
@@ -44,13 +48,17 @@ class AccountChangeValidator {
       }
     }
 
-    if (!allowUsernameChange) {
-      assert updatedAccount.getUsername().equals(originalAccount.getUsername());
+    if (!allowUsernameHashChange) {
+      final byte[] updatedAccountUsernameHash = updatedAccount.getUsernameHash().orElse(NO_HASH);
+      final byte[] originalAccountUsernameHash = originalAccount.getUsernameHash().orElse(NO_HASH);
 
-      if (!updatedAccount.getUsername().equals(originalAccount.getUsername())) {
-        logger.error("Username changed via \"normal\" update; usernames must be changed via setUsername method",
+      boolean usernameUnchanged = MessageDigest.isEqual(updatedAccountUsernameHash, originalAccountUsernameHash);
+
+      if (!usernameUnchanged) {
+        logger.error("Username hash changed via \"normal\" update; username hashes must be changed via reserveUsernameHash and confirmUsernameHash methods",
             new RuntimeException());
       }
+      assert usernameUnchanged;
     }
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2020 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
@@ -13,11 +13,11 @@ import static java.lang.annotation.ElementType.PARAMETER;
 import static java.lang.annotation.ElementType.TYPE_USE;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
+import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;
-import javax.validation.Constraint;
-import javax.validation.Payload;
 
 @Target({ FIELD, METHOD, CONSTRUCTOR, PARAMETER, ANNOTATION_TYPE, TYPE_USE })
 @Retention(RUNTIME)
@@ -25,12 +25,12 @@ import javax.validation.Payload;
     ExactlySizeValidatorForString.class,
     ExactlySizeValidatorForArraysOfByte.class,
     ExactlySizeValidatorForCollection.class,
+    ExactlySizeValidatorForSecretBytes.class,
 })
 @Documented
 public @interface ExactlySize {
 
-  String message() default "{org.whispersystems.textsecuregcm.util.ExactlySize." +
-      "message}";
+  String message() default "{org.whispersystems.textsecuregcm.util.ExactlySize.message}";
 
   Class<?>[] groups() default { };
 

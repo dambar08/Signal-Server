@@ -6,44 +6,59 @@ package org.whispersystems.textsecuregcm.configuration;
 
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonTypeName;
+import com.google.common.annotations.VisibleForTesting;
+import io.lettuce.core.resource.ClientResources;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
-import java.util.List;
-import javax.validation.Valid;
-import javax.validation.constraints.NotEmpty;
-import javax.validation.constraints.NotNull;
+import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 
-public class RedisConfiguration {
+@JsonTypeName("default")
+public class RedisConfiguration implements FaultTolerantRedisClientFactory {
 
   @JsonProperty
   @NotEmpty
-  private String url;
+  private String uri;
 
   @JsonProperty
   @NotNull
-  private List<String> replicaUrls;
-
-  @JsonProperty
-  @NotNull
-  private Duration timeout = Duration.ofSeconds(10);
+  private Duration timeout = Duration.ofSeconds(1);
 
   @JsonProperty
   @NotNull
   @Valid
   private CircuitBreakerConfiguration circuitBreaker = new CircuitBreakerConfiguration();
 
-  public String getUrl() {
-    return url;
+  @JsonProperty
+  @NotNull
+  @Valid
+  private RetryConfiguration retry = new RetryConfiguration();
+
+  public String getUri() {
+    return uri;
   }
 
-  public List<String> getReplicaUrls() {
-    return replicaUrls;
+  @VisibleForTesting
+  public void setUri(String uri) {
+    this.uri = uri;
   }
 
   public Duration getTimeout() {
     return timeout;
   }
 
-  public CircuitBreakerConfiguration getCircuitBreakerConfiguration() {
+  public @NotNull @Valid CircuitBreakerConfiguration getCircuitBreakerConfiguration() {
     return circuitBreaker;
+  }
+
+  public @NotNull @Valid RetryConfiguration getRetryConfiguration() {
+    return retry;
+  }
+
+  @Override
+  public FaultTolerantRedisClient build(final String name, final ClientResources clientResources) {
+    return new FaultTolerantRedisClient(name, this, clientResources.mutate());
   }
 }

@@ -5,17 +5,21 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.exc.InvalidTypeIdException;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 class AnswerChallengeRequestTest {
 
-  @Test
-  void parse() throws JsonProcessingException {
+  @ParameterizedTest
+  @ValueSource(strings = {"captcha"})
+  void parse(final String type) throws JsonProcessingException {
     {
       final String pushChallengeJson = """
           {
@@ -25,7 +29,7 @@ class AnswerChallengeRequestTest {
           """;
 
       final AnswerChallengeRequest answerChallengeRequest =
-          SystemMapper.getMapper().readValue(pushChallengeJson, AnswerChallengeRequest.class);
+          SystemMapper.jsonMapper().readValue(pushChallengeJson, AnswerChallengeRequest.class);
 
       assertTrue(answerChallengeRequest instanceof AnswerPushChallengeRequest);
       assertEquals("Hello I am a push challenge token",
@@ -33,24 +37,24 @@ class AnswerChallengeRequestTest {
     }
 
     {
-      final String recaptchaChallengeJson = """
+      final String captchaChallengeJson = """
           {
-            "type": "recaptcha",
+            "type": "%s",
             "token": "A server-generated token",
             "captcha": "The value of the solved captcha token"
           }
-          """;
+          """.formatted(type);
 
       final AnswerChallengeRequest answerChallengeRequest =
-          SystemMapper.getMapper().readValue(recaptchaChallengeJson, AnswerChallengeRequest.class);
+          SystemMapper.jsonMapper().readValue(captchaChallengeJson, AnswerChallengeRequest.class);
 
-      assertTrue(answerChallengeRequest instanceof AnswerRecaptchaChallengeRequest);
+      assertTrue(answerChallengeRequest instanceof AnswerCaptchaChallengeRequest);
 
       assertEquals("A server-generated token",
-          ((AnswerRecaptchaChallengeRequest) answerChallengeRequest).getToken());
+          ((AnswerCaptchaChallengeRequest) answerChallengeRequest).getToken());
 
       assertEquals("The value of the solved captcha token",
-          ((AnswerRecaptchaChallengeRequest) answerChallengeRequest).getCaptcha());
+          ((AnswerCaptchaChallengeRequest) answerChallengeRequest).getCaptcha());
     }
 
     {
@@ -63,7 +67,7 @@ class AnswerChallengeRequestTest {
           """;
 
       assertThrows(InvalidTypeIdException.class,
-          () -> SystemMapper.getMapper().readValue(unrecognizedTypeJson, AnswerChallengeRequest.class));
+          () -> SystemMapper.jsonMapper().readValue(unrecognizedTypeJson, AnswerChallengeRequest.class));
     }
   }
 }

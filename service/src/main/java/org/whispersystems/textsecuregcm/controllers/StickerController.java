@@ -1,34 +1,37 @@
 /*
- * Copyright 2013-2021 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.controllers;
 
 import io.dropwizard.auth.Auth;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
 import java.security.SecureRandom;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.HexFormat;
 import java.util.LinkedList;
 import java.util.List;
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.ws.rs.GET;
-import javax.ws.rs.Path;
-import javax.ws.rs.PathParam;
-import javax.ws.rs.Produces;
-import javax.ws.rs.core.MediaType;
-import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.entities.StickerPackFormUploadAttributes;
 import org.whispersystems.textsecuregcm.entities.StickerPackFormUploadAttributes.StickerPackFormUploadItem;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.s3.PolicySigner;
 import org.whispersystems.textsecuregcm.s3.PostPolicyGenerator;
 import org.whispersystems.textsecuregcm.util.Constants;
-import org.whispersystems.textsecuregcm.util.Hex;
 import org.whispersystems.textsecuregcm.util.Pair;
+import org.whispersystems.websocket.auth.ReadOnly;
 
 @Path("/v1/sticker")
+@Tag(name = "Stickers")
 public class StickerController {
 
   private final RateLimiters        rateLimiters;
@@ -44,7 +47,7 @@ public class StickerController {
   @GET
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/pack/form/{count}")
-  public StickerPackFormUploadAttributes getStickersForm(@Auth AuthenticatedAccount auth,
+  public StickerPackFormUploadAttributes getStickersForm(@ReadOnly @Auth AuthenticatedDevice auth,
       @PathParam("count") @Min(1) @Max(201) int stickerCount)
       throws RateLimitExceededException {
     rateLimiters.getStickerPackLimiter().validate(auth.getAccount().getUuid());
@@ -78,7 +81,7 @@ public class StickerController {
     byte[] object = new byte[16];
     new SecureRandom().nextBytes(object);
 
-    return Hex.toStringCondensed(object);
+    return HexFormat.of().formatHex(object);
   }
 
 }

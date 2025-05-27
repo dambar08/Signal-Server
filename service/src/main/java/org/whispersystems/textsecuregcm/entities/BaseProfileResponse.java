@@ -6,38 +6,52 @@
 package org.whispersystems.textsecuregcm.entities;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import org.signal.libsignal.protocol.IdentityKey;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
+import org.whispersystems.textsecuregcm.util.ByteArrayBase64WithPaddingAdapter;
+import org.whispersystems.textsecuregcm.util.ServiceIdentifierAdapter;
+import org.whispersystems.textsecuregcm.util.IdentityKeyAdapter;
+
 import java.util.List;
-import java.util.UUID;
+import java.util.Map;
 
 public class BaseProfileResponse {
 
   @JsonProperty
-  private String identityKey;
+  @JsonSerialize(using = IdentityKeyAdapter.Serializer.class)
+  @JsonDeserialize(using = IdentityKeyAdapter.Deserializer.class)
+  private IdentityKey identityKey;
 
   @JsonProperty
-  private String unidentifiedAccess;
+  @JsonSerialize(using = ByteArrayBase64WithPaddingAdapter.Serializing.class)
+  @JsonDeserialize(using = ByteArrayBase64WithPaddingAdapter.Deserializing.class)
+  private byte[] unidentifiedAccess;
 
   @JsonProperty
   private boolean unrestrictedUnidentifiedAccess;
 
   @JsonProperty
-  private UserCapabilities capabilities;
+  private Map<String, Boolean> capabilities;
 
   @JsonProperty
   private List<Badge> badges;
 
   @JsonProperty
-  private UUID uuid;
+  @JsonSerialize(using = ServiceIdentifierAdapter.ServiceIdentifierSerializer.class)
+  @JsonDeserialize(using = ServiceIdentifierAdapter.ServiceIdentifierDeserializer.class)
+  private ServiceIdentifier uuid;
 
   public BaseProfileResponse() {
   }
 
-  public BaseProfileResponse(final String identityKey,
-      final String unidentifiedAccess,
+  public BaseProfileResponse(final IdentityKey identityKey,
+      final byte[] unidentifiedAccess,
       final boolean unrestrictedUnidentifiedAccess,
-      final UserCapabilities capabilities,
+      final Map<String, Boolean> capabilities,
       final List<Badge> badges,
-      final UUID uuid) {
+      final ServiceIdentifier uuid) {
 
     this.identityKey = identityKey;
     this.unidentifiedAccess = unidentifiedAccess;
@@ -47,11 +61,11 @@ public class BaseProfileResponse {
     this.uuid = uuid;
   }
 
-  public String getIdentityKey() {
+  public IdentityKey getIdentityKey() {
     return identityKey;
   }
 
-  public String getUnidentifiedAccess() {
+  public byte[] getUnidentifiedAccess() {
     return unidentifiedAccess;
   }
 
@@ -59,7 +73,7 @@ public class BaseProfileResponse {
     return unrestrictedUnidentifiedAccess;
   }
 
-  public UserCapabilities getCapabilities() {
+  public Map<String, Boolean> getCapabilities() {
     return capabilities;
   }
 
@@ -67,7 +81,7 @@ public class BaseProfileResponse {
     return badges;
   }
 
-  public UUID getUuid() {
+  public ServiceIdentifier getUuid() {
     return uuid;
   }
 }

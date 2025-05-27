@@ -5,16 +5,11 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import javax.validation.constraints.NotEmpty;
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotEmpty;
 
-public class ProvisioningMessage {
-
-  @JsonProperty
-  @NotEmpty
-  private String body;
-
-  public String getBody() {
-    return body;
-  }
+public record ProvisioningMessage(
+    @Schema(description = "The MIME base64-encoded body of the provisioning message to send to the destination device")
+    @NotEmpty
+    String body) {
 }

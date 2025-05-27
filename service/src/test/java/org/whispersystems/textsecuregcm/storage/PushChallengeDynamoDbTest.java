@@ -18,8 +18,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
-import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition;
-import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType;
+import org.whispersystems.textsecuregcm.storage.DynamoDbExtensionSchema.Tables;
+import org.whispersystems.textsecuregcm.util.TestRandomUtil;
 
 class PushChallengeDynamoDbTest {
 
@@ -28,22 +28,16 @@ class PushChallengeDynamoDbTest {
   private static final long CURRENT_TIME_MILLIS = 1_000_000_000;
 
   private static final Random RANDOM = new Random();
-  private static final String TABLE_NAME = "push_challenge_test";
 
   @RegisterExtension
-  static DynamoDbExtension dynamoDbExtension = DynamoDbExtension.builder()
-      .tableName(TABLE_NAME)
-      .hashKey(PushChallengeDynamoDb.KEY_ACCOUNT_UUID)
-      .attributeDefinition(AttributeDefinition.builder()
-          .attributeName(PushChallengeDynamoDb.KEY_ACCOUNT_UUID)
-          .attributeType(ScalarAttributeType.B)
-          .build())
-      .build();
+  static final DynamoDbExtension DYNAMO_DB_EXTENSION = new DynamoDbExtension(Tables.PUSH_CHALLENGES);
 
   @BeforeEach
   void setUp() {
-    this.pushChallengeDynamoDb = new PushChallengeDynamoDb(dynamoDbExtension.getDynamoDbClient(), TABLE_NAME, Clock.fixed(
-        Instant.ofEpochMilli(CURRENT_TIME_MILLIS), ZoneId.systemDefault()));
+    this.pushChallengeDynamoDb = new PushChallengeDynamoDb(
+        DYNAMO_DB_EXTENSION.getDynamoDbClient(),
+        Tables.PUSH_CHALLENGES.tableName(),
+        Clock.fixed(Instant.ofEpochMilli(CURRENT_TIME_MILLIS), ZoneId.systemDefault()));
   }
 
   @Test
@@ -62,6 +56,8 @@ class PushChallengeDynamoDbTest {
     assertFalse(pushChallengeDynamoDb.remove(uuid, token));
     assertTrue(pushChallengeDynamoDb.add(uuid, token, Duration.ofMinutes(1)));
     assertTrue(pushChallengeDynamoDb.remove(uuid, token));
+    assertTrue(pushChallengeDynamoDb.add(uuid, token, Duration.ofMinutes(-1)));
+    assertFalse(pushChallengeDynamoDb.remove(uuid, token));
   }
 
   @Test
@@ -71,9 +67,6 @@ class PushChallengeDynamoDbTest {
   }
 
   private static byte[] generateRandomToken() {
-    final byte[] token = new byte[16];
-    RANDOM.nextBytes(token);
-
-    return token;
+    return TestRandomUtil.nextBytes(16);
   }
 }

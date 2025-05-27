@@ -5,18 +5,18 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.util.List;
-import java.util.UUID;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
+import org.whispersystems.textsecuregcm.util.ServiceIdentifierAdapter;
 
-public class SendMultiRecipientMessageResponse {
-  @JsonProperty
-  private List<UUID> uuids404;
-
-  public SendMultiRecipientMessageResponse() {
-  }
-
-  public SendMultiRecipientMessageResponse(final List<UUID> uuids404) {
-    this.uuids404 = uuids404;
-  }
+public record SendMultiRecipientMessageResponse(
+    @Schema(description = "a list of the service identifiers in the request that do not correspond to registered Signal users; will only be present if a group send endorsement was supplied for the request")
+    @JsonSerialize(contentUsing = ServiceIdentifierAdapter.ServiceIdentifierSerializer.class)
+    @JsonDeserialize(contentUsing = ServiceIdentifierAdapter.ServiceIdentifierDeserializer.class)
+    List<ServiceIdentifier> uuids404) {
 }

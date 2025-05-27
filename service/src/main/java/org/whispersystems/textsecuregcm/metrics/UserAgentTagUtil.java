@@ -5,82 +5,80 @@
 
 package org.whispersystems.textsecuregcm.metrics;
 
-import com.vdurmont.semver4j.Semver;
 import io.micrometer.core.instrument.Tag;
-import org.whispersystems.textsecuregcm.util.Pair;
-import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import org.apache.commons.lang3.StringUtils;
+import org.whispersystems.textsecuregcm.WhisperServerVersion;
+import org.whispersystems.textsecuregcm.storage.ClientReleaseManager;
 import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
 import org.whispersystems.textsecuregcm.util.ua.UserAgent;
 import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
-
-import java.util.EnumMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
  * Utility class for extracting platform/version metrics tags from User-Agent strings.
  */
 public class UserAgentTagUtil {
 
-    public static final  String    PLATFORM_TAG      = "platform";
-    public static final  String    VERSION_TAG       = "clientVersion";
-    static final         List<Tag> OVERFLOW_TAGS     = List.of(Tag.of(PLATFORM_TAG, "overflow"), Tag.of(VERSION_TAG, "overflow"));
-    static final         List<Tag> UNRECOGNIZED_TAGS = List.of(Tag.of(PLATFORM_TAG, "unrecognized"), Tag.of(VERSION_TAG, "unrecognized"));
+  public static final String PLATFORM_TAG = "platform";
+  public static final String VERSION_TAG = "clientVersion";
+  public static final String LIBSIGNAL_TAG = "libsignal";
 
-    private static final Map<ClientPlatform, Semver> MINIMUM_VERSION_BY_PLATFORM = new EnumMap<>(ClientPlatform.class);
+  public static final String SERVER_UA =
+      String.format("Signal-Server/%s (%s)", WhisperServerVersion.getServerVersion(), UUID.randomUUID());
 
-    static {
-        MINIMUM_VERSION_BY_PLATFORM.put(ClientPlatform.ANDROID, new Semver("4.0.0"));
-        MINIMUM_VERSION_BY_PLATFORM.put(ClientPlatform.DESKTOP, new Semver("1.0.0"));
-        MINIMUM_VERSION_BY_PLATFORM.put(ClientPlatform.IOS,     new Semver("3.0.0"));
+  private UserAgentTagUtil() {
+  }
+
+  public static Tag getPlatformTag(final String userAgentString) {
+
+    if (SERVER_UA.equals(userAgentString)) {
+      return Tag.of(PLATFORM_TAG, "server");
     }
 
-    static final         int                               MAX_VERSIONS  = 1_000;
-    private static final Set<Pair<ClientPlatform, Semver>> SEEN_VERSIONS = new HashSet<>();
+    UserAgent userAgent = null;
 
-    private UserAgentTagUtil() {
+    try {
+      userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
+    } catch (final UnrecognizedUserAgentException ignored) {
     }
 
-    public static List<Tag> getUserAgentTags(final String userAgentString) {
-        try {
-            final UserAgent userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
-            final List<Tag> tags;
+    return getPlatformTag(userAgent);
+  }
 
-            if (userAgent.getVersion().isStable() && userAgent.getVersion().isGreaterThanOrEqualTo(MINIMUM_VERSION_BY_PLATFORM.get(userAgent.getPlatform()))) {
-                if (allowVersion(userAgent.getPlatform(), userAgent.getVersion())) {
-                    tags = List.of(Tag.of(PLATFORM_TAG, userAgent.getPlatform().name().toLowerCase()), Tag.of(VERSION_TAG, userAgent.getVersion().toString()));
-                } else {
-                    tags = OVERFLOW_TAGS;
-                }
-            } else {
-                tags = UNRECOGNIZED_TAGS;
-            }
+  public static Tag getPlatformTag(@Nullable final UserAgent userAgent) {
+    return Tag.of(PLATFORM_TAG, userAgent != null ? userAgent.platform().name().toLowerCase() : "unrecognized");
+  }
 
-            return tags;
-        } catch (final UnrecognizedUserAgentException e) {
-            return UNRECOGNIZED_TAGS;
-        }
+  public static Optional<Tag> getClientVersionTag(final String userAgentString, final ClientReleaseManager clientReleaseManager) {
+    try {
+      final UserAgent userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
+
+      if (clientReleaseManager.isVersionActive(userAgent.platform(), userAgent.version())) {
+        return Optional.of(Tag.of(VERSION_TAG, userAgent.version().toString()));
+      }
+    } catch (final UnrecognizedUserAgentException ignored) {
     }
 
-    public static Tag getPlatformTag(final String userAgentString) {
-        String platform;
+    return Optional.empty();
+  }
 
-        try {
-            platform = UserAgentUtil.parseUserAgentString(userAgentString).getPlatform().name().toLowerCase();
-        } catch (final UnrecognizedUserAgentException e) {
-            platform = "unrecognized";
-        }
+  public static List<Tag> getLibsignalAndPlatformTags(final String userAgentString) {
+    String platform;
+    boolean libsignal;
 
-        return Tag.of(PLATFORM_TAG, platform);
+    try {
+      final UserAgent userAgent = UserAgentUtil.parseUserAgentString(userAgentString);
+      platform = userAgent.platform().name().toLowerCase();
+      libsignal = StringUtils.contains(userAgent.additionalSpecifiers(), "libsignal");
+    } catch (final UnrecognizedUserAgentException e) {
+      platform = "unrecognized";
+      libsignal = false;
     }
 
-    private static boolean allowVersion(final ClientPlatform platform, final Semver version) {
-        final Pair<ClientPlatform, Semver> platformAndVersion = new Pair<>(platform, version);
+    return List.of(Tag.of(PLATFORM_TAG, platform), Tag.of(LIBSIGNAL_TAG, String.valueOf(libsignal)));
+  }
 
-        synchronized (SEEN_VERSIONS) {
-            return SEEN_VERSIONS.contains(platformAndVersion) || (SEEN_VERSIONS.size() < MAX_VERSIONS && SEEN_VERSIONS.add(platformAndVersion));
-        }
-    }
 }

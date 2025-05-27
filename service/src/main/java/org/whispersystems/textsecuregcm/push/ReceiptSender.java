@@ -1,24 +1,25 @@
 /*
- * Copyright 2013-2022 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.push;
 
-import com.codahale.metrics.InstrumentedExecutorService;
-import com.codahale.metrics.SharedMetricRegistries;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.textsecuregcm.controllers.NoSuchUserException;
 import org.whispersystems.textsecuregcm.entities.MessageProtos.Envelope;
+import org.whispersystems.textsecuregcm.identity.AciServiceIdentifier;
+import org.whispersystems.textsecuregcm.identity.ServiceIdentifier;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
-import org.whispersystems.textsecuregcm.storage.Account;
+import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
-import org.whispersystems.textsecuregcm.util.Constants;
 
 public class ReceiptSender {
 
@@ -32,38 +33,55 @@ public class ReceiptSender {
       final ExecutorService executor) {
     this.accountManager = accountManager;
     this.messageSender = messageSender;
-    this.executor = new InstrumentedExecutorService(executor,
-        SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME),
-        MetricsUtil.name(ReceiptSender.class, "executor"));
+    this.executor = ExecutorServiceMetrics.monitor(
+        Metrics.globalRegistry, executor, MetricsUtil.name(ReceiptSender.class, "executor"), MetricsUtil.PREFIX)
+    ;
   }
 
-  public CompletableFuture<Void> sendReceipt(UUID sourceUuid, long sourceDeviceId, UUID destinationUuid, long messageId)
-      throws NoSuchUserException {
-    if (sourceUuid.equals(destinationUuid)) {
-      return CompletableFuture.completedFuture(null);
+  public void sendReceipt(ServiceIdentifier sourceIdentifier, byte sourceDeviceId, AciServiceIdentifier destinationIdentifier, long messageId) {
+    if (sourceIdentifier.equals(destinationIdentifier)) {
+      return;
     }
 
-    final Account destinationAccount = accountManager.getByAccountIdentifier(destinationUuid)
-        .orElseThrow(() -> new NoSuchUserException(destinationUuid));
+    executor.submit(() -> {
+      try {
+        accountManager.getByAccountIdentifier(destinationIdentifier.uuid()).ifPresentOrElse(
+            destinationAccount -> {
+              final Envelope message = Envelope.newBuilder()
+                  .setServerTimestamp(System.currentTimeMillis())
+                  .setSourceServiceId(sourceIdentifier.toServiceIdentifierString())
+                  .setSourceDevice(sourceDeviceId)
+                  .setDestinationServiceId(destinationIdentifier.toServiceIdentifierString())
+                  .setClientTimestamp(messageId)
+                  .setType(Envelope.Type.SERVER_DELIVERY_RECEIPT)
+                  .setUrgent(false)
+                  .build();
 
-    final Envelope.Builder message = Envelope.newBuilder()
-        .setServerTimestamp(System.currentTimeMillis())
-        .setSourceUuid(sourceUuid.toString())
-        .setSourceDevice((int) sourceDeviceId)
-        .setDestinationUuid(destinationUuid.toString())
-        .setTimestamp(messageId)
-        .setType(Envelope.Type.SERVER_DELIVERY_RECEIPT);
+              final Map<Byte, Envelope> messagesByDeviceId = destinationAccount.getDevices().stream()
+                  .collect(Collectors.toMap(Device::getId, ignored -> message));
 
-    return CompletableFuture.runAsync(() -> {
-      for (final Device destinationDevice : destinationAccount.getDevices()) {
-        try {
-          messageSender.sendMessage(destinationAccount, destinationDevice, message.build(), false);
-        } catch (final NotPushRegisteredException e) {
-          logger.info("User no longer push registered for delivery receipt: " + e.getMessage());
-        } catch (final Exception e) {
-          logger.warn("Could not send delivery receipt", e);
-        }
+              final Map<Byte, Integer> registrationIdsByDeviceId = destinationAccount.getDevices().stream()
+                  .collect(Collectors.toMap(Device::getId,
+                      device -> device.getRegistrationId(destinationIdentifier.identityType())));
+
+              try {
+                messageSender.sendMessages(destinationAccount,
+                    destinationIdentifier,
+                    messagesByDeviceId,
+                    registrationIdsByDeviceId,
+                    Optional.empty(),
+                    UserAgentTagUtil.SERVER_UA);
+              } catch (final Exception e) {
+                logger.warn("Could not send delivery receipt", e);
+              }
+            },
+            () -> logger.info("No longer registered: {}", destinationIdentifier)
+        );
+
+      } catch (final Exception e) {
+        // this exception is most likely a Dynamo timeout or a Redis timeout/circuit breaker
+        logger.warn("Could not send delivery receipt", e);
       }
-    }, executor);
+    });
   }
 }

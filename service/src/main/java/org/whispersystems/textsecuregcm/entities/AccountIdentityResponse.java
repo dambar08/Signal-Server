@@ -5,56 +5,34 @@
 
 package org.whispersystems.textsecuregcm.entities;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
-import javax.annotation.Nullable;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.UUID;
+import javax.annotation.Nullable;
+import org.whispersystems.textsecuregcm.util.ByteArrayBase64UrlAdapter;
 
-public class AccountIdentityResponse {
+public record AccountIdentityResponse(
+    @Schema(description = "the account identifier for this account")
+    UUID uuid,
 
-  private final UUID uuid;
-  private final String number;
-  private final UUID pni;
+    @Schema(description = "the phone number associated with this account")
+    String number,
 
-  @Nullable
-  private final String username;
+    @Schema(description = "the account identifier for this account's phone-number identity")
+    UUID pni,
 
-  private final boolean storageCapable;
+    @Schema(description = "a hash of this account's username, if set")
+    @JsonSerialize(using = ByteArrayBase64UrlAdapter.Serializing.class)
+    @JsonDeserialize(using = ByteArrayBase64UrlAdapter.Deserializing.class)
+    @Nullable byte[] usernameHash,
 
-  @JsonCreator
-  public AccountIdentityResponse(
-      @JsonProperty("uuid") final UUID uuid,
-      @JsonProperty("number") final String number,
-      @JsonProperty("pni") final UUID pni,
-      @JsonProperty("username") @Nullable final String username,
-      @JsonProperty("storageCapable") final boolean storageCapable) {
+    @Schema(description = "this account's username link handle, if set")
+    @Nullable UUID usernameLinkHandle,
 
-    this.uuid = uuid;
-    this.number = number;
-    this.pni = pni;
-    this.username = username;
-    this.storageCapable = storageCapable;
-  }
+    @Schema(description = "whether any of this account's devices support storage")
+    boolean storageCapable,
 
-  public UUID getUuid() {
-    return uuid;
-  }
-
-  public String getNumber() {
-    return number;
-  }
-
-  public UUID getPni() {
-    return pni;
-  }
-
-  @Nullable
-  public String getUsername() {
-    return username;
-  }
-
-  public boolean isStorageCapable() {
-    return storageCapable;
-  }
+    @Schema(description = "entitlements for this account and their current expirations")
+    Entitlements entitlements) {
 }

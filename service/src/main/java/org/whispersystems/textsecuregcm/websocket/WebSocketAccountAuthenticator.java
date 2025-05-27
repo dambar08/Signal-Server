@@ -1,43 +1,56 @@
 /*
- * Copyright 2013-2021 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
 package org.whispersystems.textsecuregcm.websocket;
 
-import io.dropwizard.auth.basic.BasicCredentials;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import static org.whispersystems.textsecuregcm.util.HeaderUtils.basicCredentialsFromAuthHeader;
+
+import com.google.common.net.HttpHeaders;
+import javax.annotation.Nullable;
 import org.eclipse.jetty.websocket.api.UpgradeRequest;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
-import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
+import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
+import org.whispersystems.websocket.ReusableAuth;
+import org.whispersystems.websocket.auth.AuthenticationException;
+import org.whispersystems.websocket.auth.PrincipalSupplier;
 import org.whispersystems.websocket.auth.WebSocketAuthenticator;
 
 
-public class WebSocketAccountAuthenticator implements WebSocketAuthenticator<AuthenticatedAccount> {
+public class WebSocketAccountAuthenticator implements WebSocketAuthenticator<AuthenticatedDevice> {
 
+  private static final ReusableAuth<AuthenticatedDevice> CREDENTIALS_NOT_PRESENTED = ReusableAuth.anonymous();
+
+  private static final ReusableAuth<AuthenticatedDevice> INVALID_CREDENTIALS_PRESENTED = ReusableAuth.invalid();
   private final AccountAuthenticator accountAuthenticator;
+  private final PrincipalSupplier<AuthenticatedDevice> principalSupplier;
 
-  public WebSocketAccountAuthenticator(AccountAuthenticator accountAuthenticator) {
+  public WebSocketAccountAuthenticator(final AccountAuthenticator accountAuthenticator,
+      final PrincipalSupplier<AuthenticatedDevice> principalSupplier) {
     this.accountAuthenticator = accountAuthenticator;
+    this.principalSupplier = principalSupplier;
   }
 
   @Override
-  public AuthenticationResult<AuthenticatedAccount> authenticate(UpgradeRequest request) {
-    Map<String, List<String>> parameters = request.getParameterMap();
-    List<String> usernames = parameters.get("login");
-    List<String> passwords = parameters.get("password");
-
-    if (usernames == null || usernames.size() == 0 ||
-        passwords == null || passwords.size() == 0) {
-      return new AuthenticationResult<>(Optional.empty(), false);
+  public ReusableAuth<AuthenticatedDevice> authenticate(final UpgradeRequest request)
+      throws AuthenticationException {
+    try {
+      return authenticatedAccountFromHeaderAuth(request.getHeader(HttpHeaders.AUTHORIZATION));
+    } catch (final Exception e) {
+      // this will be handled and logged upstream
+      // the most likely exception is a transient error connecting to account storage
+      throw new AuthenticationException(e);
     }
-
-    BasicCredentials credentials = new BasicCredentials(usernames.get(0).replace(" ", "+"),
-        passwords.get(0).replace(" ", "+"));
-
-    return new AuthenticationResult<>(accountAuthenticator.authenticate(credentials), true);
   }
 
+  private ReusableAuth<AuthenticatedDevice> authenticatedAccountFromHeaderAuth(@Nullable final String authHeader) {
+    if (authHeader == null) {
+      return CREDENTIALS_NOT_PRESENTED;
+    }
+    return basicCredentialsFromAuthHeader(authHeader)
+        .flatMap(accountAuthenticator::authenticate)
+        .map(authenticatedAccount -> ReusableAuth.authenticated(authenticatedAccount, this.principalSupplier))
+        .orElse(INVALID_CREDENTIALS_PRESENTED);
+  }
 }
